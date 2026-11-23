@@ -1,0 +1,33 @@
+# Citlivá data & API klíče
+.env
+.env.*
+!.env.example
+client_secret*.json
+token*.json
+credentials.json
+*.pem
+*.key
+# Dočasné soubory, rendery & média
+temp/
+downloads/
+output/
+music/
+assets/sfx/
+*.mp4
+*.mp3
+*.wav
+*.m4a
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.ass
+*.srt
+*.log
+# Python prostředí & cache
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.DS_Store
+Thumbs.db
