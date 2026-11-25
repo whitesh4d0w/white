@@ -70,11 +70,14 @@ MAX_INLINE_VIDEO_BYTES = 18 * 1024 * 1024
 VALID_CATEGORIES = ("cars", "police", "water", "heist", "city")
 VALID_MODES = ("auto", "news", "breakdown")
 
-# Active Gemini 3.x Vision models (avoid deprecated 2.0-flash / 2.5-flash)
+# Active Gemini 4 Hydrogen & 3.x Vision models (avoid deprecated 2.0-flash / 2.5-flash)
 VISION_MODELS = [
+    "gemini-4-hydrogen",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
 ]
 
@@ -629,6 +632,32 @@ def _parse_and_validate_vision_json(
     }
 
 
+def _discover_vision_models(client: genai.Client) -> list[str]:
+    """Discover active Vision-capable models on the API key, prioritizing Hydrogen & Flash 3.x."""
+    discovered: list[str] = []
+    try:
+        for m in client.models.list():
+            m_id = (getattr(m, "name", "") or "").replace("models/", "")
+            low = m_id.lower()
+            if not m_id:
+                continue
+            if any(skip in low for skip in ("tts", "embed", "imagen", "image", "audio", "veo")):
+                continue
+            if "hydrogen" in low or "flash" in low or "omni" in low:
+                discovered.append(m_id)
+    except Exception:
+        return list(VISION_MODELS)
+
+    if not discovered:
+        return list(VISION_MODELS)
+
+    ordered: list[str] = [p for p in VISION_MODELS if p in discovered]
+    for d in discovered:
+        if "hydrogen" in d.lower() and d not in ordered:
+            ordered.insert(0, d)
+    return ordered or list(VISION_MODELS)
+
+
 def _call_vision_with_failover(
     client: genai.Client,
     contents_builder,
@@ -637,17 +666,23 @@ def _call_vision_with_failover(
     models: list[str] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Execute Gemini Vision generation with model failover, retries, and timeout handling."""
-    candidate_models = models or VISION_MODELS
+    candidate_models = models or _discover_vision_models(client)
     last_error: Exception | None = None
 
     for model_name in candidate_models:
+        is_hydrogen = "hydrogen" in model_name.lower()
         for attempt in range(1, 4):
             try:
                 print(f"      -> Vision analýza přes {model_name} (pokus {attempt}/3)...", flush=True)
+                t_cfg = (
+                    types.ThinkingConfig(thinking_level="LOW")
+                    if is_hydrogen
+                    else types.ThinkingConfig(thinking_budget=0)
+                )
                 config = types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.7,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    thinking_config=t_cfg,
                     http_options=types.HttpOptions(timeout=35000),
                 )
                 try:
@@ -683,14 +718,12 @@ def _call_vision_with_failover(
                 last_error = exc
                 print(f"      ⚠️ {model_name} selhal: {str(exc)[:140]}", flush=True)
                 err = str(exc).lower()
-                if "404" in err or "not_found" in err or "invalid_argument" in err and "model" in err:
+                if "404" in err or "not_found" in err or ("invalid_argument" in err and "model" in err):
                     break
                 if "429" in err or "resource_exhausted" in err or "quota" in err:
                     time.sleep(min(4.0 * attempt, 8.0))
                 elif "503" in err or "unavailable" in err or "high demand" in err:
                     time.sleep(1.5)
-                    if attempt >= 2:
-                        break
                 elif "504" in err or "deadline" in err or "timeout" in err or "timed out" in err:
                     time.sleep(1.5)
                 else:
