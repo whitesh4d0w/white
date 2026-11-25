@@ -131,32 +131,67 @@ def get_tiktok_channel_id(channel_filter: str = None) -> str:
 
 
 def upload_temp_video(video_path: Path) -> str:
-    """Nahraje video pomocí systémového curlu pro dočasný přímý HTTPS odkaz."""
+    """Nahraje video pomocí spolehlivého multi-hosting řetězce (Catbox -> Litterbox 72h -> tmpfiles -> Uguu)."""
     video_p = Path(video_path).resolve()
     if not video_p.exists():
         raise FileNotFoundError(f"Video neexistuje: {video_p}")
 
     file_size_mb = video_p.stat().st_size / (1024 * 1024)
-    print(f"📦 Nahrávám video ({file_size_mb:.1f} MB) pro dočasný odkaz pro Buffer...")
+    print(f"📦 Nahrávám video ({file_size_mb:.1f} MB) pro veřejný odkaz pro Buffer...")
 
-    cmd = ["curl", "-s", "-F", f"file=@{str(video_p)}", "-F", "expire=3600", "https://tmpfiles.org/api/v1/upload"]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-
-    if res.returncode != 0 or not res.stdout:
-        raise RuntimeError(f"Curl upload selhal (kód {res.returncode}): {res.stderr}")
-
+    # 1. Primární poskytovatel: Catbox.moe (max 200 MB, permanentní přímý MP4 link - nevyprší ve frontě Bufferu)
     try:
-        res_json = json.loads(res.stdout)
-    except Exception:
-        raise RuntimeError(f"Neplatná odpověď z tmpfiles.org: {res.stdout}")
+        print("  [1/4] Zkouším Catbox.moe...")
+        cmd_cat = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", f"fileToUpload=@{str(video_p)}", "https://catbox.moe/user/api.php"]
+        res = subprocess.run(cmd_cat, capture_output=True, text=True)
+        url = res.stdout.strip()
+        if res.returncode == 0 and url.startswith("http"):
+            print(f"  -> Catbox.moe úspěch: {url}")
+            return url
+    except Exception as e:
+        print(f"  ⚠️ Catbox.moe selhalo: {e}")
 
-    if res_json.get("status") != "success":
-        raise RuntimeError(f"Upload na tmpfiles.org selhal: {res_json}")
+    # 2. Záložní poskytovatel 1: Litterbox (max 1 GB, dočasný 72h hosting od Catboxu)
+    try:
+        print("  [2/4] Zkouším Litterbox (72h)...")
+        cmd_lit = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", "time=72h", "-F", f"fileToUpload=@{str(video_p)}", "https://litterbox.catbox.moe/resources/internals/api.php"]
+        res = subprocess.run(cmd_lit, capture_output=True, text=True)
+        url = res.stdout.strip()
+        if res.returncode == 0 and url.startswith("http"):
+            print(f"  -> Litterbox úspěch: {url}")
+            return url
+    except Exception as e:
+        print(f"  ⚠️ Litterbox selhalo: {e}")
 
-    raw_url = res_json["data"]["url"]
-    direct_url = raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-    print(f"🔗 Odkaz pro Buffer připraven: {direct_url}")
-    return direct_url
+    # 3. Záložní poskytovatel 2: Tmpfiles.org
+    try:
+        print("  [3/4] Zkouším tmpfiles.org...")
+        cmd_tmp = ["curl", "-s", "--max-time", "120", "-F", f"file=@{str(video_p)}", "https://tmpfiles.org/api/v1/upload"]
+        res = subprocess.run(cmd_tmp, capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout:
+            res_json = json.loads(res.stdout)
+            if res_json.get("status") == "success":
+                direct_url = res_json["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                print(f"  -> Tmpfiles.org úspěch: {direct_url}")
+                return direct_url
+    except Exception as e:
+        print(f"  ⚠️ Tmpfiles.org selhalo: {e}")
+
+    # 4. Záložní poskytovatel 3: Uguu.se (max 128 MB, retence jen 3 hodiny - nouzovka)
+    try:
+        print("  [4/4] Zkouším Uguu.se...")
+        cmd_uguu = ["curl", "-s", "--max-time", "90", "-F", f"files[]=@{str(video_p)}", "https://uguu.se/upload.php"]
+        res = subprocess.run(cmd_uguu, capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip().startswith("{"):
+            data = json.loads(res.stdout)
+            if data.get("success") and data.get("files"):
+                url = data["files"][0]["url"]
+                print(f"  -> Uguu.se úspěch: {url}")
+                return url
+    except Exception as e:
+        print(f"  ⚠️ Uguu.se selhalo: {e}")
+
+    raise RuntimeError("Všichni 4 hostingoví poskytovatelé pro Buffer selhali! Zkontroluj internetové připojení.")
 
 
 def post_video_to_buffer_queue(video_path: str, caption: str, channel_filter: str = None) -> dict:
