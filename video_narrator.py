@@ -336,12 +336,15 @@ def select_clip_sequence(
                 cohesive_cats = [c for c in non_empty if len(by_cat[c]) >= target_count]
 
             if cohesive_cats:
-                # Prefer categories with enough unseen clips first
+                # Prefer specific thematic categories (cars/heist/police/water) over broad catch-all 'city'
+                # when they have enough fresh clips, for tighter visual cohesion.
+                specific_cats = [c for c in cohesive_cats if c != "city"]
+                preferred_cats = specific_cats or cohesive_cats
                 fresh_pool_cats = [
-                    c for c in cohesive_cats
+                    c for c in preferred_cats
                     if sum(1 for x in by_cat[c] if clip_recency.get(x["clip_name"], 0) == 0) >= min(target_count, len(by_cat[c]))
                 ]
-                pool_cats = fresh_pool_cats or cohesive_cats
+                pool_cats = fresh_pool_cats or preferred_cats
                 non_recent = [c for c in pool_cats if c not in recent_categories[-2:]]
                 selected_category = random.choice(non_recent or pool_cats)
             else:
@@ -526,7 +529,7 @@ def _build_vision_prompt(
     )
     past_str = ", ".join(f'"{t}"' for t in recent_titles[-12:]) if recent_titles else "None"
     n_candidates = len(plan)
-    min_sel = min(8, n_candidates)
+    min_sel = min(6, n_candidates)
     max_sel = min(target_clips, n_candidates)
 
     mode_guidance = (
@@ -544,9 +547,10 @@ MODE: {mode.upper()} | COHESIVE THEME: {category.upper()}
 {mode_guidance}
 
 CRITICAL DIRECTOR & SCRIPTWRITER RULES:
-1. UNIFIED STORY, NOT RANDOM CAPTIONS: Find ONE compelling viral topic, hook, and continuous story arc (Hook -> Escalation -> Climax/Payoff) that connects the chosen clips. NEVER write disconnected "First we see X... Next we see Y..." descriptions. Every beat must flow naturally from the previous beat while still matching what is literally visible on screen in that clip!
-2. CLIP SELECTION & REORDERING: Pick and reorder the best {min_sel}-{max_sel} clips from 0..{n_candidates - 1} in "selected_indices", putting the strongest scroll-stopping visual hook FIRST.
-3. STRICT PACING (NO CLIP LOOPING): Each segment's "narration" MUST be strictly **6-10 words max** (approx. 2.2-3.8 seconds spoken) so it fits inside a single clip without repeating or looping. Punchy, fast, high-retention phrasing only!
+1. STRICT COHESION & OUTLIER REJECTION: You MUST reject any candidate clip that does not visually belong to the EXACT SAME micro-theme/setting as your chosen story (for example, NEVER mix a random indoor gym or kitchen breakroom clip into a street, nightlife, car, or combat sequence!). Only keep clips that genuinely look like they belong in the same cohesive video.
+2. UNIFIED STORY, NOT RANDOM CAPTIONS: Find ONE compelling viral topic, hook, and continuous story arc (Hook -> Escalation -> Climax/Payoff) that connects the chosen clips. NEVER write disconnected "First we see X... Next we see Y..." descriptions. Every beat must flow naturally from the previous beat while still matching what is literally visible on screen in that clip!
+3. CLIP SELECTION & REORDERING: Pick and reorder ONLY the {min_sel}-{max_sel} tightly related clips from 0..{n_candidates - 1} in "selected_indices", dropping all unrelated outliers and putting the strongest scroll-stopping visual hook FIRST.
+4. STRICT PACING (NO CLIP LOOPING): Each segment's "narration" MUST be strictly **6-10 words max** (approx. 2.2-3.8 seconds spoken) so it fits inside a single clip without repeating or looping. Punchy, fast, high-retention phrasing only!
 4. Output "segments" with "index" 0 through len(selected_indices) - 1, matching "selected_indices" 1:1 in order:
    - "visual_summary": 1 concise factual sentence describing what literally happens in that chosen clip.
    - "narration": 6-10 words max of continuous voiceover directly tied to that clip's visuals.
@@ -596,7 +600,7 @@ def _validate_selected_indices(
     raw_selected: Any,
     candidate_count: int,
     fallback_count: int,
-    min_selected: int = 8,
+    min_selected: int = 6,
     max_selected: int = 10,
 ) -> list[int]:
     """Validate optional `selected_indices` from Vision JSON with safe sequential fallback."""
@@ -627,7 +631,7 @@ def _parse_and_validate_vision_json(
     expected_count: int,
     fallback_category: str,
     candidate_count: int | None = None,
-    min_selected: int = 8,
+    min_selected: int = 6,
     max_selected: int = 10,
 ) -> dict[str, Any]:
     """Parse Gemini Vision JSON output, validate optional `selected_indices`, and verify segment parity."""
@@ -1315,10 +1319,10 @@ def create_narrated_video_sequence(
     combined_audio_path = os.path.join(temp_dir, f"{run_id}_voice.wav")
     synced_video_path = os.path.join(temp_dir, f"{run_id}_synced.mp4")
 
-    # 1. Discover clips & build raw silent montage (~12 cohesive candidates for Director selection)
+    # 1. Discover clips & build raw silent montage (~14 candidates so Director can drop outliers)
     print("   [VN 1/5] 📂 Skenuji knihovnu B-roll a vybírám neokoukané klipy...", flush=True)
     clips = discover_broll_clips(broll_dir, probe_all=False)
-    candidate_clips = min(len(clips), max(target_clips + 2, 12))
+    candidate_clips = min(len(clips), max(target_clips + 4, 14))
     effective_mode, selected_category, plan = select_clip_sequence(
         clips=clips,
         mode=mode,
