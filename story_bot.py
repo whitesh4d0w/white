@@ -64,20 +64,16 @@ BG_MUSIC_FILE = os.path.join(MUSIC_DIR, "ambient_story_bg.mp3")
 TEXT_MODELS = [
     "gemini-4-hydrogen",
     "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
     "gemini-3.6-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-pro"
+    "gemini-3.1-flash-lite",
 ]
 
 TTS_MODELS = [
     "gemini-3.8-flash-tts",
     "gemini-3.8-flash-lite-tts",
     "gemini-3.1-flash-tts-preview",
-    "gemini-2.5-pro-preview-tts",
-    "gemini-2.5-flash-preview-tts"
 ]
 
 OFFLINE_STORIES = [
@@ -156,31 +152,38 @@ def generate_story(client: genai.Client, num_parts: int = 1) -> dict:
     past_titles = [h.get("title", "") for h in history[-20:]]
     past_str = ", ".join(f'"{t}"' for t in past_titles) if past_titles else "None"
 
-    categories = ["drama_revenge", "mystery_crime", "reddit_confession", "creepypasta"]
+    categories = [
+        "betrayal exposed publicly with irrefutable proof (wedding, family dinner, or group chat)",
+        "petty malicious compliance that legally cost a toxic boss or entitled neighbor thousands",
+        "terrifying late-night mystery (baby monitor, dashcam, Ring camera, or 911 call twist)",
+        "secret double life discovered on an unlocked phone or hidden bank account",
+        "unbelievable workplace revenge where the arrogant coworker dug their own grave",
+        "chilling true-crime style stalker or intruder twist with an unexpected savior",
+    ]
     chosen_cat = random.choice(categories)
 
     if num_parts == 1:
-        prompt = f"""You are a master viral storyteller on TikTok and YouTube Shorts.
-Write ONE complete, self-contained, intensely gripping viral story in the genre: '{chosen_cat}'.
+        prompt = f"""You are an elite viral Reddit Storytime writer for US TikTok and YouTube Shorts.
+Write ONE complete, self-contained, adrenaline-fueled viral story in the theme: '{chosen_cat}'.
 
-STRICT RULES FOR 42-48 SECOND RETENTION (MUST STAY UNDER 55 SECONDS):
+STRICT RULES FOR MAXIMUM DRIVE, SUSPENSE & PAYOFF:
 1. Do NOT repeat or resemble any of these recent titles: [{past_str}].
-2. Word count: The story MUST be strictly 105-122 words long (giving ~42-48 seconds of spoken audio — NEVER exceed 125 words!).
-3. Structure:
-   - Sentence 1 (0-3s): Immediate shocking, scroll-stopping first-person hook (no "So today..." or slow intro).
-   - Middle: Fast escalating tension with a sudden shocking twist.
-   - Ending: Satisfying climax/payoff + quick spoken CTA ("Like and subscribe for daily stories!").
-4. Tone: First-person ('I', 'me'), conversational, ultra-engaging, fast-paced.
-5. Random seed: {random.randint(100000, 999999)}
+2. Word count: Strictly 110-125 words total (~40-46 seconds at fast storytelling pace).
+3. RELENTLESS DRIVE (SHORT PUNCHY SENTENCES): Every sentence MUST be 5-12 words max. Short, sharp, breathless sentences only — zero filler, zero slow background explanations!
+4. KILLER 2-SECOND HOOK (Sentence 1): Start IN MEDIA RES at the exact moment of shock with concrete details (time, object, betrayal). Example energy: "I found a burner phone taped under my husband's car seat at 2 AM."
+5. RISING TENSION: Every 2 sentences must raise the stakes or reveal a sharper clue. Keep the listener leaning in!
+6. UNFORGETTABLE CLIMAX & PAYOFF: The ending MUST deliver a ruthless, crystal-clear, jaw-dropping twist or karma payoff (concrete action/consequence, NEVER a vague moral or soft ending), then finish with: "Like and subscribe for more!"
+7. Tone: Raw first-person ('I', 'me'), urgent, dramatic, zero AI-sounding clichés.
+8. Random seed: {random.randint(100000, 999999)}
 
 Output ONLY valid JSON:
 {{
-  "title": "Catchy Story Title Under 50 Chars",
-  "category": "{chosen_cat}",
+  "title": "Punchy Curiosity Title Under 50 Chars",
+  "category": "reddit_story",
   "parts": [
-    "Complete 105-122 word story script..."
+    "Complete 110-125 word high-drive story script..."
   ],
-  "description": "1-2 sentence teaser + comment question"
+  "description": "1-2 sentence suspense teaser + comment question"
 }}"""
     else:
         prompt = f"""You are a master viral storyteller on TikTok and YouTube Shorts.
@@ -207,8 +210,8 @@ Output ONLY valid JSON:
 }}"""
 
     models = get_available_text_models(client)
-    MAX_ATTEMPTS = 5
-    print(f"🔍 Nalezeno {len(models)} textových modelů. Zahajuji generování (až {MAX_ATTEMPTS} pokusů na model, timeout: 300s)...")
+    MAX_ATTEMPTS = 3
+    print(f"🔍 Nalezeno {len(models)} textových modelů. Zahajuji generování (až {MAX_ATTEMPTS} pokusy na model)...")
 
     for model_name in models:
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -262,13 +265,14 @@ def generate_voiceover_edge_fallback(text: str, output_audio: str):
         import edge_tts
 
     async def _run():
-        communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural", rate="+4%")
+        # AndrewMultilingualNeural +10% má výrazně lepší drive a přirozenější intonaci než plochý Christopher
+        communicate = edge_tts.Communicate(text, "en-US-AndrewMultilingualNeural", rate="+10%")
         await communicate.save(output_audio)
 
     try:
         asyncio.run(_run())
     except Exception:
-        cmd = ["edge-tts", "--voice", "en-US-ChristopherNeural", "--text", text, "--write-media", output_audio]
+        cmd = ["edge-tts", "--voice", "en-US-AndrewMultilingualNeural", "--rate=+10%", "--text", text, "--write-media", output_audio]
         subprocess.run(cmd, check=True)
 
 def generate_voiceover(text: str, output_audio: str, api_key: str = None) -> float:
@@ -276,23 +280,28 @@ def generate_voiceover(text: str, output_audio: str, api_key: str = None) -> flo
     audio_bytes = None
 
     if key:
-        client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1alpha", timeout=180000))
-        MAX_TTS_ATTEMPTS = 5
+        client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1alpha", timeout=60000))
+        MAX_TTS_ATTEMPTS = 2
+        tts_prompt = (
+            "Read this as an intense, breathless, high-retention viral TikTok storyteller "
+            "with sharp dramatic emphasis, rising urgency, and zero monotone:\n\n"
+            f"{text}"
+        )
         for model_name in TTS_MODELS:
             for attempt in range(1, MAX_TTS_ATTEMPTS + 1):
                 attempt_str = f" (pokus {attempt}/{MAX_TTS_ATTEMPTS})" if MAX_TTS_ATTEMPTS > 1 else ""
-                print(f"Zkouším Gemini TTS: {model_name}{attempt_str} (Hlas: Orion, timeout: 300s)...")
+                print(f"Zkouším Gemini TTS: {model_name}{attempt_str} (Hlas: Fenrir)...")
                 t0 = time.time()
                 try:
                     res = client.models.generate_content(
                         model=model_name,
-                        contents=text,
+                        contents=tts_prompt,
                         config=types.GenerateContentConfig(
                             response_modalities=["AUDIO"],
                             speech_config=types.SpeechConfig(
-                                voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Orion"))
+                                voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Fenrir"))
                             ),
-                            http_options=types.HttpOptions(timeout=180000)
+                            http_options=types.HttpOptions(timeout=60000)
                         )
                     )
                     if res and res.candidates:
@@ -302,7 +311,7 @@ def generate_voiceover(text: str, output_audio: str, api_key: str = None) -> flo
                                     audio_bytes = part.inline_data.data
                                     break
                     if audio_bytes:
-                        print(f"-> Hlas Orion úspěšně vygenerován za {time.time() - t0:.1f}s!")
+                        print(f"-> Hlas Fenrir úspěšně vygenerován za {time.time() - t0:.1f}s!")
                         break
                 except Exception as e:
                     err = str(e)
@@ -325,7 +334,7 @@ def generate_voiceover(text: str, output_audio: str, api_key: str = None) -> flo
                 break
 
     if not audio_bytes:
-        print("-> Přepínám na Edge-TTS (přirozený hlas Christopher)...")
+        print("-> Přepínám na Edge-TTS (dynamický hlas AndrewMultilingual +10%)...")
         generate_voiceover_edge_fallback(text, output_audio)
     else:
         temp_raw = os.path.join(TEMP_DIR, "raw_audio_story.dat")
