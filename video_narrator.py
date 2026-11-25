@@ -601,7 +601,7 @@ def _validate_selected_indices(
     raw_selected: Any,
     candidate_count: int,
     fallback_count: int,
-    min_selected: int = 8,
+    min_selected: int = 6,
     max_selected: int = 10,
 ) -> list[int]:
     """Validate optional `selected_indices` from Vision JSON with safe sequential fallback."""
@@ -632,7 +632,7 @@ def _parse_and_validate_vision_json(
     expected_count: int,
     fallback_category: str,
     candidate_count: int | None = None,
-    min_selected: int = 8,
+    min_selected: int = 6,
     max_selected: int = 10,
 ) -> dict[str, Any]:
     """Parse Gemini Vision JSON output, validate optional `selected_indices`, and verify segment parity."""
