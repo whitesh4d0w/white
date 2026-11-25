@@ -18,6 +18,7 @@ Workflow:
 
 from __future__ import annotations
 
+import array
 import asyncio
 import json
 import os
@@ -298,8 +299,9 @@ def select_clip_sequence(
     clips: list[dict[str, Any]],
     mode: str = "auto",
     category: str | None = None,
-    target_clips: int = 7,
+    target_clips: int = 10,
     history: list[dict] | None = None,
+    candidate_clips: int | None = None,
 ) -> tuple[str, str, list[dict[str, Any]]]:
     """
     Select a cohesive sequence of clips for raw montage assembly.
@@ -308,7 +310,8 @@ def select_clip_sequence(
     if mode not in VALID_MODES:
         raise VideoNarratorError(f"Unsupported mode '{mode}'. Expected one of {VALID_MODES}.")
 
-    count = max(1, int(target_clips))
+    target_count = max(1, int(target_clips))
+    count = max(target_count, int(candidate_clips)) if candidate_clips is not None else target_count
     clip_recency, _, recent_categories = _extract_recent_history(history)
 
     # Group clips by semantic category
@@ -318,7 +321,7 @@ def select_clip_sequence(
         if cat in by_cat:
             by_cat[cat].append(clip)
 
-    # Choose category
+    # Choose category: prefer ONE cohesive category with >= target_count (or >= 8) clips
     req_cat = category.strip().lower() if isinstance(category, str) and category.strip() else None
     if req_cat and req_cat in VALID_CATEGORIES and by_cat[req_cat]:
         selected_category = req_cat
@@ -327,11 +330,26 @@ def select_clip_sequence(
         if not non_empty:
             selected_category = "city"
         else:
-            # Prefer categories with richer clip pools and not just used
-            rich_cats = [c for c in non_empty if len(by_cat[c]) >= min(3, count)]
-            candidate_cats = rich_cats or non_empty
-            fresh_cats = [c for c in candidate_cats if c not in recent_categories[-2:]]
-            selected_category = random.choice(fresh_cats or candidate_cats)
+            min_cohesive = max(8, target_count) if any(len(by_cat[c]) >= max(8, target_count) for c in non_empty) else 8
+            cohesive_cats = [c for c in non_empty if len(by_cat[c]) >= min_cohesive]
+            if not cohesive_cats:
+                cohesive_cats = [c for c in non_empty if len(by_cat[c]) >= target_count]
+
+            if cohesive_cats:
+                # Prefer categories with enough unseen clips first
+                fresh_pool_cats = [
+                    c for c in cohesive_cats
+                    if sum(1 for x in by_cat[c] if clip_recency.get(x["clip_name"], 0) == 0) >= min(target_count, len(by_cat[c]))
+                ]
+                pool_cats = fresh_pool_cats or cohesive_cats
+                non_recent = [c for c in pool_cats if c not in recent_categories[-2:]]
+                selected_category = random.choice(non_recent or pool_cats)
+            else:
+                # Fallback: pick the richest category (avoiding recent if tied)
+                max_len = max(len(by_cat[c]) for c in non_empty)
+                richest = [c for c in non_empty if len(by_cat[c]) == max_len]
+                non_recent = [c for c in richest if c not in recent_categories[-2:]]
+                selected_category = random.choice(non_recent or richest)
 
     # Resolve auto mode
     if mode == "auto":
@@ -343,19 +361,21 @@ def select_clip_sequence(
     ordered_cat = _order_by_freshness(cat_pool, clip_recency)
     ordered_all = _order_by_freshness(clips, clip_recency)
 
-    # Build a combined freshness-ordered pool:
+    # Keep the Short visually unified in `selected_category`:
     # 1) Unseen clips in the chosen category
-    # 2) Unseen clips from the rest of the library (prevents repeating used clips while fresh ones remain!)
-    # 3) Previously used clips in the chosen category (oldest first)
-    # 4) Previously used clips from the rest of the library (oldest first)
+    # 2) Previously used clips in the chosen category (oldest first)
+    # 3) Only if the chosen category has fewer than `count` clips on disk, top up from other categories
     seen_names: set[str] = set()
     unique_pool: list[dict[str, Any]] = []
-    unseen_cat = [c for c in ordered_cat if clip_recency.get(c["clip_name"], 0) == 0]
-    unseen_all = [c for c in ordered_all if clip_recency.get(c["clip_name"], 0) == 0]
-    for c in unseen_cat + unseen_all + ordered_cat + ordered_all:
+    for c in ordered_cat:
         if c["clip_name"] not in seen_names:
             seen_names.add(c["clip_name"])
             unique_pool.append(c)
+    if len(unique_pool) < count:
+        for c in ordered_all:
+            if c["clip_name"] not in seen_names:
+                seen_names.add(c["clip_name"])
+                unique_pool.append(c)
 
     plan: list[dict[str, Any]] = []
 
@@ -372,22 +392,24 @@ def select_clip_sequence(
             detail_trim = min(0.6, max(0.0, hero["src_dur"] - 2.2))
             plan.append({**hero, "start_trim": round(detail_trim, 2), "effect": "breakdown_slowmo"})
 
-        # Remaining supporting clips: same-category fresh clips first, then fresh clips from ordered_all
+        # Remaining supporting clips: same-category fresh clips first
         supp_source = [c for c in unique_pool if c["clip_name"] != hero["clip_name"]] or ordered_cat
 
         for idx in range(len(plan), count):
             chosen = supp_source[(idx - len(plan)) % len(supp_source)]
             occ = sum(1 for p in plan if p["clip_name"] == chosen["clip_name"])
-            max_trim = max(0.0, chosen["src_dur"] - 2.2)
-            trim_start = round((occ * 1.4) % max_trim, 2) if max_trim > 0.2 else 0.0
+            if occ == 0:
+                trim_start = 0.0
+            else:
+                max_trim = max(0.0, chosen["src_dur"] - 2.2)
+                trim_start = round((occ * 1.4) % max_trim, 2) if max_trim > 0.2 else 0.0
             plan.append({
                 **chosen,
                 "start_trim": trim_start,
                 "effect": "zoom" if idx % 2 == 1 else "normal",
             })
     else:
-        # "news" multicut: use distinct clips across the entire library (same-category fresh first,
-        # topped up with fresh clips from other categories if category has < count unique clips).
+        # "news" multicut: distinct clips from the cohesive category (start_trim=0.0 for unique clips)
         pool = unique_pool
         used_in_plan: set[str] = set()
 
@@ -401,8 +423,11 @@ def select_clip_sequence(
 
             used_in_plan.add(chosen["clip_name"])
             occ = sum(1 for p in plan if p["clip_name"] == chosen["clip_name"])
-            max_trim = max(0.0, chosen["src_dur"] - 2.2)
-            trim_start = round((occ * 1.5) % max_trim, 2) if max_trim > 0.2 else 0.0
+            if occ == 0:
+                trim_start = 0.0
+            else:
+                max_trim = max(0.0, chosen["src_dur"] - 2.2)
+                trim_start = round((occ * 1.5) % max_trim, 2) if max_trim > 0.2 else 0.0
             plan.append({
                 **chosen,
                 "start_trim": trim_start,
@@ -489,49 +514,54 @@ def _build_vision_prompt(
     mode: str,
     category: str,
     recent_titles: list[str],
+    target_clips: int = 10,
 ) -> str:
-    """Build the Watch-Then-Narrate prompt forcing 1:1 visual-to-commentary alignment."""
+    """Build the Viral Shorts Director Watch-Then-Narrate prompt."""
     windows_desc = "\n".join(
-        f"- Segment {item['index']}: {item['raw_start']:.2f}s to {item['raw_end']:.2f}s"
+        f"- Candidate Clip {item['index']}: {item['raw_start']:.2f}s to {item['raw_end']:.2f}s"
         for item in plan
     )
     past_str = ", ".join(f'"{t}"' for t in recent_titles[-12:]) if recent_titles else "None"
-    n = len(plan)
+    n_candidates = len(plan)
+    min_sel = min(8, n_candidates)
+    max_sel = min(target_clips, n_candidates)
 
     mode_guidance = (
-        "This is a scene breakdown video: treat Segment 0 as the main reveal, Segment 1 as a closer zoomed-in detail observation, and the remaining clips as supporting visual evidence."
+        "SCENE BREAKDOWN ARC: Open with the strongest visual hook, then zoom into the core mechanic/detail, and escalate through supporting evidence clips."
         if mode == "breakdown"
-        else "This is a fast-paced GTA 6 secrets/details multicut: connect each clip smoothly into one cohesive story while directly reacting to what is on screen in every window."
+        else "FAST-PACED VIRAL STORY ARC: Weave the clips into ONE unified GTA 6 topic with a clear Hook -> Escalation -> Climax/Payoff."
     )
 
-    return f"""You are an elite viral GTA 6 YouTube Shorts creator watching an assembled silent gameplay montage ({plan[-1]['raw_end']:.2f}s total).
+    return f"""You are an elite viral GTA 6 YouTube Shorts Director & Scriptwriter watching {n_candidates} candidate gameplay clips ({plan[-1]['raw_end']:.2f}s total).
 
-VIDEO CLIP TIMESTAMP WINDOWS (YOU MUST WATCH EVERY WINDOW):
+CANDIDATE CLIP WINDOWS (WATCH EVERY CLIP):
 {windows_desc}
 
-MODE: {mode.upper()} | PRIMARY THEME HINT: {category.upper()}
+MODE: {mode.upper()} | COHESIVE THEME: {category.upper()}
 {mode_guidance}
 
-CRITICAL WATCH-THEN-NARRATE RULES:
-1. Watch the actual video footage carefully. Describe ONLY what you literally see on screen in each timestamp window. Never invent off-screen events or contradict the visuals.
-2. Output EXACTLY {n} segments with "index" 0 through {n - 1}, matching the timestamp windows 1:1.
-3. For each segment:
-   - "visual_summary": 1 concise factual sentence describing what literally happens on screen in that window.
-   - "narration": 14-22 words (approx. 5-7 seconds spoken) of high-retention voiceover directly referencing the on-screen action in that window.
-     * Segment 0 MUST open with an immediate scroll-stopping hook referencing what appears right away in Segment 0.
-     * Segments 1 to {max(1, n - 2)} MUST use visual callouts ("Notice how...", "Look right at...", "Watch this...") tied to each clip's actual visuals.
-     * Segment {n - 1} MUST wrap up the visual on screen plus a quick CTA & question (e.g. "Subscribe for daily GTA 6 details, and tell me: ...").
-4. Do NOT reuse any of these recent titles: [{past_str}].
-5. "title" must be punchy and <= 55 characters.
-6. "description" must be 1-2 engaging teaser sentences + a question for comments (NO hashtags, NO repeating the script).
-7. "category" must be one of: "cars", "police", "water", "heist", "city".
-8. No stage directions, no timestamps in narration, no brackets, no markdown, no hashtags in narration.
+CRITICAL DIRECTOR & SCRIPTWRITER RULES:
+1. UNIFIED STORY, NOT RANDOM CAPTIONS: Find ONE compelling viral topic, hook, and continuous story arc (Hook -> Escalation -> Climax/Payoff) that connects the chosen clips. NEVER write disconnected "First we see X... Next we see Y..." descriptions. Every beat must flow naturally from the previous beat while still matching what is literally visible on screen in that clip!
+2. CLIP SELECTION & REORDERING: Pick and reorder the best {min_sel}-{max_sel} clips from 0..{n_candidates - 1} in "selected_indices", putting the strongest scroll-stopping visual hook FIRST.
+3. STRICT PACING (NO CLIP LOOPING): Each segment's "narration" MUST be strictly **6-10 words max** (approx. 2.2-3.8 seconds spoken) so it fits inside a single clip without repeating or looping. Punchy, fast, high-retention phrasing only!
+4. Output "segments" with "index" 0 through len(selected_indices) - 1, matching "selected_indices" 1:1 in order:
+   - "visual_summary": 1 concise factual sentence describing what literally happens in that chosen clip.
+   - "narration": 6-10 words max of continuous voiceover directly tied to that clip's visuals.
+     * Beat 0 MUST be an immediate scroll-stopping hook referencing Beat 0's visuals.
+     * Middle beats MUST escalate the same topic using crisp transitions tied to each clip's visuals.
+     * Final beat MUST deliver the payoff/climax + quick CTA question.
+5. Do NOT reuse any of these recent titles: [{past_str}].
+6. "title" must be punchy and <= 55 characters.
+7. "description" must be 1-2 engaging teaser sentences + a question for comments (NO hashtags, NO repeating the script).
+8. "category" must be one of: "cars", "police", "water", "heist", "city".
+9. No stage directions, no timestamps in narration, no brackets, no markdown, no hashtags in narration.
 
 Return ONLY valid JSON:
 {{
   "title": "Catchy title <= 55 chars",
   "description": "1-2 sentence teaser + comment question",
   "category": "{category}",
+  "selected_indices": [0, 1, 2],
   "segments": [
     {{"index": 0, "visual_summary": "...", "narration": "..."}},
     ...
@@ -559,12 +589,45 @@ def _clamp_title(title: str, max_len: int = 55) -> str:
     return truncated if len(truncated) >= 15 else clean[:max_len].strip()
 
 
+def _validate_selected_indices(
+    raw_selected: Any,
+    candidate_count: int,
+    fallback_count: int,
+    min_selected: int = 8,
+    max_selected: int = 10,
+) -> list[int]:
+    """Validate optional `selected_indices` from Vision JSON with safe sequential fallback."""
+    default_indices = list(range(min(fallback_count, candidate_count)))
+    if not isinstance(raw_selected, list) or not raw_selected:
+        return default_indices
+
+    parsed: list[int] = []
+    seen: set[int] = set()
+    for val in raw_selected:
+        if isinstance(val, bool) or not isinstance(val, int):
+            return default_indices
+        if val < 0 or val >= candidate_count or val in seen:
+            return default_indices
+        seen.add(val)
+        parsed.append(val)
+
+    eff_min = min(min_selected, candidate_count)
+    eff_max = min(max_selected, candidate_count)
+    if not (eff_min <= len(parsed) <= eff_max):
+        return default_indices
+
+    return parsed
+
+
 def _parse_and_validate_vision_json(
     raw_text: str,
     expected_count: int,
     fallback_category: str,
+    candidate_count: int | None = None,
+    min_selected: int = 8,
+    max_selected: int = 10,
 ) -> dict[str, Any]:
-    """Parse Gemini Vision JSON output and strictly verify 1:1 segment parity."""
+    """Parse Gemini Vision JSON output, validate optional `selected_indices`, and verify segment parity."""
     text = (raw_text or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
@@ -574,46 +637,60 @@ def _parse_and_validate_vision_json(
     if not isinstance(data, dict):
         raise ValueError("Vision response JSON is not an object.")
 
+    total_candidates = candidate_count if candidate_count is not None else expected_count
+    selected_indices = _validate_selected_indices(
+        data.get("selected_indices"),
+        candidate_count=total_candidates,
+        fallback_count=expected_count,
+        min_selected=min_selected,
+        max_selected=max_selected,
+    )
+    target_seg_count = len(selected_indices)
+
     raw_segments = data.get("segments")
-    if not isinstance(raw_segments, list) or len(raw_segments) != expected_count:
-        got = len(raw_segments) if isinstance(raw_segments, list) else type(raw_segments).__name__
-        raise ValueError(f"Expected {expected_count} segments, got {got}.")
+    if not isinstance(raw_segments, list):
+        raise ValueError(f"Expected segments list, got {type(raw_segments).__name__}.")
 
-    by_index: dict[int, dict[str, str]] = {}
-    for pos, seg in enumerate(raw_segments):
-        if not isinstance(seg, dict):
+    def _extract_seg(seg_obj: Any, pos: int) -> dict[str, str]:
+        if not isinstance(seg_obj, dict):
             raise ValueError(f"Segment at position {pos} is not an object.")
-        idx = seg.get("index", pos)
-        try:
-            idx_int = int(idx)
-        except (TypeError, ValueError):
-            idx_int = pos
-
-        visual_summary = re.sub(r"\s+", " ", str(seg.get("visual_summary", "")).strip())
-        narration = _clean_narration_text(str(seg.get("narration", "")))
+        visual_summary = re.sub(r"\s+", " ", str(seg_obj.get("visual_summary", "")).strip())
+        narration = _clean_narration_text(str(seg_obj.get("narration", "")))
         if not visual_summary or not narration:
-            raise ValueError(f"Segment {idx_int} missing visual_summary or narration.")
-        by_index[idx_int] = {
-            "visual_summary": visual_summary,
-            "narration": narration,
-        }
+            raise ValueError(f"Segment {pos} missing visual_summary or narration.")
+        return {"visual_summary": visual_summary, "narration": narration}
 
-    if set(by_index.keys()) != set(range(expected_count)):
-        if len(raw_segments) == expected_count:
-            ordered_segments = [
-                {
-                    "index": i,
-                    "visual_summary": re.sub(r"\s+", " ", str(raw_segments[i].get("visual_summary", "")).strip()),
-                    "narration": _clean_narration_text(str(raw_segments[i].get("narration", ""))),
-                }
-                for i in range(expected_count)
-            ]
+    if len(raw_segments) == target_seg_count:
+        by_index: dict[int, dict[str, str]] = {}
+        for pos, seg in enumerate(raw_segments):
+            idx = seg.get("index", pos) if isinstance(seg, dict) else pos
+            try:
+                idx_int = int(idx)
+            except (TypeError, ValueError):
+                idx_int = pos
+            by_index[idx_int] = _extract_seg(seg, pos)
+
+        if set(by_index.keys()) == set(range(target_seg_count)):
+            ordered_segments = [{"index": i, **by_index[i]} for i in range(target_seg_count)]
         else:
-            raise ValueError(f"Segment indices mismatch: {sorted(by_index.keys())}")
+            ordered_segments = [{"index": i, **_extract_seg(raw_segments[i], i)} for i in range(target_seg_count)]
+    elif len(raw_segments) == total_candidates:
+        # Gemini narrated all candidate clips: slice/reorder according to `selected_indices`
+        cand_map: dict[int, dict[str, str]] = {}
+        for pos, seg in enumerate(raw_segments):
+            idx = seg.get("index", pos) if isinstance(seg, dict) else pos
+            try:
+                idx_int = int(idx)
+            except (TypeError, ValueError):
+                idx_int = pos
+            cand_map[idx_int] = _extract_seg(seg, pos)
+
+        if set(selected_indices).issubset(cand_map.keys()):
+            ordered_segments = [{"index": i, **cand_map[cand_idx]} for i, cand_idx in enumerate(selected_indices)]
+        else:
+            ordered_segments = [{"index": i, **_extract_seg(raw_segments[cand_idx], cand_idx)} for i, cand_idx in enumerate(selected_indices)]
     else:
-        ordered_segments = [
-            {"index": i, **by_index[i]} for i in range(expected_count)
-        ]
+        raise ValueError(f"Expected {target_seg_count} segments (or {total_candidates}), got {len(raw_segments)}.")
 
     cat = str(data.get("category", fallback_category)).strip().lower()
     if cat not in VALID_CATEGORIES:
@@ -628,6 +705,7 @@ def _parse_and_validate_vision_json(
         "title": title,
         "description": description,
         "category": cat,
+        "selected_indices": selected_indices,
         "segments": ordered_segments,
     }
 
@@ -664,6 +742,9 @@ def _call_vision_with_failover(
     expected_count: int,
     fallback_category: str,
     models: list[str] | None = None,
+    candidate_count: int | None = None,
+    min_selected: int = 8,
+    max_selected: int = 10,
 ) -> tuple[dict[str, Any], str]:
     """Execute Gemini Vision generation with model failover, retries, and timeout handling."""
     candidate_models = models or _discover_vision_models(client)
@@ -711,6 +792,9 @@ def _call_vision_with_failover(
                     getattr(res, "text", "") or "",
                     expected_count=expected_count,
                     fallback_category=fallback_category,
+                    candidate_count=candidate_count,
+                    min_selected=min_selected,
+                    max_selected=max_selected,
                 )
                 return parsed, model_name
 
@@ -761,6 +845,7 @@ def analyze_video_with_gemini(
     recent_titles: list[str],
     temp_dir: str,
     run_id: str,
+    target_clips: int = 10,
 ) -> tuple[dict[str, Any], str]:
     """
     Have Gemini Vision watch `montage_raw_path` using:
@@ -768,8 +853,11 @@ def analyze_video_with_gemini(
       2) Inline video bytes fallback,
       3) Timestamped JPEG frame-strip fallback.
     """
-    prompt = _build_vision_prompt(plan, mode, category, recent_titles)
-    expected_count = len(plan)
+    prompt = _build_vision_prompt(plan, mode, category, recent_titles, target_clips=target_clips)
+    candidate_count = len(plan)
+    expected_count = min(target_clips, candidate_count)
+    min_selected = min(8, candidate_count)
+    max_selected = min(target_clips, candidate_count)
     errors: list[str] = []
 
     # Tier 1: Gemini Files API upload
@@ -781,6 +869,9 @@ def analyze_video_with_gemini(
             contents_builder=lambda: [uploaded_file, prompt],
             expected_count=expected_count,
             fallback_category=category,
+            candidate_count=candidate_count,
+            min_selected=min_selected,
+            max_selected=max_selected,
         )
     except Exception as exc:
         errors.append(f"files_upload: {exc}")
@@ -805,6 +896,9 @@ def analyze_video_with_gemini(
                 ],
                 expected_count=expected_count,
                 fallback_category=category,
+                candidate_count=candidate_count,
+                min_selected=min_selected,
+                max_selected=max_selected,
             )
         errors.append(f"inline_video: skipped ({file_size} bytes > {MAX_INLINE_VIDEO_BYTES})")
     except Exception as exc:
@@ -830,6 +924,9 @@ def analyze_video_with_gemini(
             contents_builder=lambda: frame_parts,
             expected_count=expected_count,
             fallback_category=category,
+            candidate_count=candidate_count,
+            min_selected=min_selected,
+            max_selected=max_selected,
         )
     except Exception as exc:
         errors.append(f"frame_strip: {exc}")
@@ -982,6 +1079,68 @@ def synthesize_segment_audio(
                 pass
 
 
+def _fit_wav_to_max_duration(wav_path: str, max_dur: float, max_tempo: float = 1.15) -> float:
+    """
+    Ensure a frame-aligned 44.1 kHz mono WAV fits within `max_dur` without clip looping.
+    Applies mild `atempo` (up to `max_tempo`) first, then frame-aligned clamping if still over.
+    """
+    cur_dur = probe_media_duration(wav_path)
+    if cur_dur <= 0.0:
+        return cur_dur
+
+    max_frames = max(1, int(max_dur * FPS))
+    aligned_max_dur = max_frames / float(FPS)
+    if cur_dur <= aligned_max_dur:
+        return cur_dur
+
+    # Step 1: Mild atempo speedup (up to 1.15x) so natural speech fits inside `aligned_max_dur`
+    target_dur = max(0.4, aligned_max_dur - 0.04)
+    tempo = min(max_tempo, max(1.01, cur_dur / target_dur))
+    tmp_tempo_path = f"{wav_path}.atempo.wav"
+    try:
+        cmd = [
+            FFMPEG_BIN, "-y", "-nostdin",
+            "-i", wav_path,
+            "-filter:a", f"atempo={tempo:.4f}",
+            "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le",
+            tmp_tempo_path,
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if res.returncode == 0 and os.path.isfile(tmp_tempo_path) and os.path.getsize(tmp_tempo_path) > 44:
+            cur_dur = _normalize_audio_to_frame_aligned_wav(tmp_tempo_path, wav_path)
+    finally:
+        if os.path.exists(tmp_tempo_path):
+            try:
+                os.remove(tmp_tempo_path)
+            except OSError:
+                pass
+
+    if cur_dur <= aligned_max_dur:
+        return cur_dur
+
+    # Step 2: Hard frame-aligned clamp (with gentle 25ms fade-out) so seg_dur <= src_dur is guaranteed
+    max_samples = max_frames * SAMPLES_PER_FRAME
+    with wave.open(wav_path, "rb") as w_in:
+        raw_frames = w_in.readframes(w_in.getnframes())
+
+    pcm = array.array("h")
+    pcm.frombytes(raw_frames[: max_samples * 2])
+    if len(pcm) > 0:
+        fade_samples = min(int(0.025 * SAMPLE_RATE), len(pcm))
+        start_fade = len(pcm) - fade_samples
+        for i in range(fade_samples):
+            gain = 1.0 - ((i + 1) / float(fade_samples))
+            pcm[start_fade + i] = int(pcm[start_fade + i] * gain)
+
+    with wave.open(wav_path, "wb") as w_out:
+        w_out.setnchannels(1)
+        w_out.setsampwidth(2)
+        w_out.setframerate(SAMPLE_RATE)
+        w_out.writeframes(pcm.tobytes())
+
+    return len(pcm) / float(SAMPLE_RATE)
+
+
 def concatenate_wav_segments(segment_wavs: list[str], combined_wav_path: str) -> float:
     """Losslessly concatenate normalized 44.1 kHz mono WAV segments into one track."""
     if not segment_wavs:
@@ -1023,34 +1182,29 @@ def render_synced_video(segments: list[dict[str, Any]], synced_video_path: str) 
         start_trim = float(seg.get("start_trim", 0.0))
         effect = seg.get("effect", "normal")
 
-        # Determine speed / looping so clip cleanly covers `target_dur`
-        use_loop = False
+        # Never loop clips (-stream_loop is forbidden). Fit cleanly within `src_dur`,
+        # using mild slowdown + end-frame hold only if a direct caller passes target_dur > src_dur.
         if effect == "breakdown_slowmo":
-            speed_factor = 1.25
-            needed_src = target_dur / speed_factor
-            if src_dur < needed_src + 0.05:
-                use_loop = True
-                speed_factor = 1.0
+            if src_dur * 1.25 >= target_dur:
+                speed_factor = 1.25
+                needed_src = target_dur / speed_factor
+            else:
+                speed_factor = min(1.35, max(1.0, target_dur / max(0.1, src_dur)))
+                needed_src = src_dur
         elif src_dur >= target_dur:
             speed_factor = 1.0
             needed_src = target_dur
-        elif (target_dur / max(0.1, src_dur)) <= 1.35:
-            speed_factor = target_dur / src_dur
+        else:
+            speed_factor = min(1.35, target_dur / max(0.1, src_dur))
             needed_src = src_dur
-        else:
-            use_loop = True
-            speed_factor = 1.0
-            needed_src = target_dur
 
-        if use_loop:
-            inputs.extend(["-stream_loop", "-1", "-i", seg["clip_path"]])
-            eff_trim = 0.0
+        inputs.extend(["-i", seg["clip_path"]])
+        if src_dur - start_trim >= needed_src + 0.02:
+            eff_trim = start_trim
         else:
-            inputs.extend(["-i", seg["clip_path"]])
-            if src_dur - start_trim >= needed_src + 0.05:
-                eff_trim = start_trim
-            else:
-                eff_trim = max(0.0, src_dur - needed_src - 0.02)
+            eff_trim = max(0.0, src_dur - needed_src)
+
+        pad_dur = max(0.35, target_dur - (src_dur - eff_trim) * speed_factor + 0.25)
 
         if effect == "breakdown_slowmo":
             scale_crop = (
@@ -1070,7 +1224,7 @@ def render_synced_video(segments: list[dict[str, Any]], synced_video_path: str) 
 
         filters.append(
             f"[{idx}:v]trim=start={eff_trim:.4f},setpts={speed_factor:.6f}*(PTS-STARTPTS),"
-            f"fps={FPS},tpad=stop_mode=clone:stop_duration=0.35,"
+            f"fps={FPS},tpad=stop_mode=clone:stop_duration={pad_dur:.3f},"
             f"trim=start_frame=0:end_frame={target_frames},setpts=PTS-STARTPTS,"
             f"{scale_crop},format=yuv420p[v{idx}]"
         )
@@ -1103,7 +1257,7 @@ def create_narrated_video_sequence(
     category: str | None = None,
     voice: str = "Orion",
     api_key: str | None = None,
-    target_clips: int = 7,
+    target_clips: int = 10,
 ) -> dict[str, Any]:
     """
     Execute the full Video-First (Watch-Then-Narrate) pipeline:
@@ -1120,15 +1274,17 @@ def create_narrated_video_sequence(
     combined_audio_path = os.path.join(temp_dir, f"{run_id}_voice.wav")
     synced_video_path = os.path.join(temp_dir, f"{run_id}_synced.mp4")
 
-    # 1. Discover clips & build raw silent montage
+    # 1. Discover clips & build raw silent montage (~12 cohesive candidates for Director selection)
     print("   [VN 1/5] 📂 Skenuji knihovnu B-roll a vybírám neokoukané klipy...", flush=True)
     clips = discover_broll_clips(broll_dir, probe_all=False)
+    candidate_clips = min(len(clips), max(target_clips + 2, 12))
     effective_mode, selected_category, plan = select_clip_sequence(
         clips=clips,
         mode=mode,
         category=category,
         target_clips=target_clips,
         history=history,
+        candidate_clips=candidate_clips,
     )
 
     # Probe exact durations only for the selected clips in `plan` (0.2s vs 25s for 350 clips)
@@ -1167,16 +1323,20 @@ def create_narrated_video_sequence(
         recent_titles=recent_titles,
         temp_dir=temp_dir,
         run_id=run_id,
+        target_clips=target_clips,
     )
 
-    # 3. Synthesize TTS per segment and build frame-accurate timelines
+    selected_indices = vision_data.get("selected_indices") or list(range(min(target_clips, len(plan))))
+    chosen_plan = [plan[i] for i in selected_indices]
+
+    # 3. Synthesize TTS per segment, align cleanly to <= src_dur, and build frame-accurate timelines
     segments: list[dict[str, Any]] = []
     segment_wavs: list[str] = []
     timeline_cursor = 0.0
 
-    for idx, plan_item in enumerate(plan):
+    for idx, plan_item in enumerate(chosen_plan):
         v_seg = vision_data["segments"][idx]
-        print(f"   [VN 4/5] 🗣️ Generuji dabing pro segment {idx + 1}/{len(plan)}...", flush=True)
+        print(f"   [VN 4/5] 🗣️ Generuji dabing pro segment {idx + 1}/{len(chosen_plan)}...", flush=True)
         raw_seg_path = os.path.join(temp_dir, f"{run_id}_seg_{idx:02d}_raw.dat")
         wav_seg_path = os.path.join(temp_dir, f"{run_id}_seg_{idx:02d}.wav")
 
@@ -1187,6 +1347,14 @@ def create_narrated_video_sequence(
             wav_out_path=wav_seg_path,
             voice=voice,
         )
+        # Ensure TTS fits within source clip duration (mild atempo <= 1.15x, then clamp)
+        max_clip_dur = max(1.0, float(plan_item["src_dur"]) - float(plan_item.get("start_trim", 0.0)))
+        if seg_dur > max_clip_dur - 0.1:
+            if plan_item.get("start_trim", 0.0) > 0.0 and seg_dur <= float(plan_item["src_dur"]):
+                plan_item["start_trim"] = 0.0
+                max_clip_dur = float(plan_item["src_dur"])
+            seg_dur = _fit_wav_to_max_duration(wav_seg_path, max_dur=max_clip_dur, max_tempo=1.15)
+
         start_t = round(timeline_cursor, 6)
         end_t = round(timeline_cursor + seg_dur, 6)
         timeline_cursor = end_t
