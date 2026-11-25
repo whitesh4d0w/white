@@ -391,7 +391,7 @@ def render_story_short(voice_audio: str, ass_sub: str, output_path: str, duratio
     sfx_idx = 2
 
     sub_filter = f"subtitles=filename='{ass_esc}'" if os.name == 'nt' else f"subtitles='{ass_esc}'"
-    v_filter = f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,eq=contrast=1.05:saturation=1.1,{sub_filter}[v]"
+    v_filter = f"[0:v]setpts=PTS-STARTPTS,fps=30,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,eq=contrast=1.05:saturation=1.1,{sub_filter}[v]"
 
     if os.path.exists(BG_MUSIC_FILE):
         inputs.extend(["-stream_loop", "-1", "-i", BG_MUSIC_FILE])
@@ -406,8 +406,9 @@ def render_story_short(voice_audio: str, ass_sub: str, output_path: str, duratio
         "-map", "[v]",
         "-map", "[a]",
         "-t", f"{safe_dur:.2f}",
-        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-r", "30",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
         "-shortest", output_path
     ]
 
