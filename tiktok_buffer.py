@@ -131,7 +131,7 @@ def get_tiktok_channel_id(channel_filter: str = None) -> str:
 
 
 def upload_temp_video(video_path: Path) -> str:
-    """Nahraje video pomocí spolehlivého multi-hosting řetězce (Catbox -> Litterbox 72h -> tmpfiles -> Uguu)."""
+    """Nahraje video pomocí spolehlivého multi-hosting řetězce (x0.at -> tmpfiles -> Litterbox 72h -> Uguu)."""
     video_p = Path(video_path).resolve()
     if not video_p.exists():
         raise FileNotFoundError(f"Video neexistuje: {video_p}")
@@ -139,33 +139,21 @@ def upload_temp_video(video_path: Path) -> str:
     file_size_mb = video_p.stat().st_size / (1024 * 1024)
     print(f"📦 Nahrávám video ({file_size_mb:.1f} MB) pro veřejný odkaz pro Buffer...")
 
-    # 1. Primární poskytovatel: Catbox.moe (max 200 MB, permanentní přímý MP4 link - nevyprší ve frontě Bufferu)
+    # 1. Primární poskytovatel: x0.at (max 512 MB, retence 3-100 dní, přímý MP4 link)
     try:
-        print("  [1/4] Zkouším Catbox.moe...")
-        cmd_cat = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", f"fileToUpload=@{str(video_p)}", "https://catbox.moe/user/api.php"]
-        res = subprocess.run(cmd_cat, capture_output=True, text=True)
+        print("  [1/4] Zkouším x0.at...")
+        cmd_x0 = ["curl", "-s", "--max-time", "120", "-F", f"file=@{str(video_p)}", "https://x0.at"]
+        res = subprocess.run(cmd_x0, capture_output=True, text=True)
         url = res.stdout.strip()
         if res.returncode == 0 and url.startswith("http"):
-            print(f"  -> Catbox.moe úspěch: {url}")
+            print(f"  -> x0.at úspěch: {url}")
             return url
     except Exception as e:
-        print(f"  ⚠️ Catbox.moe selhalo: {e}")
+        print(f"  ⚠️ x0.at selhalo: {e}")
 
-    # 2. Záložní poskytovatel 1: Litterbox (max 1 GB, dočasný 72h hosting od Catboxu)
+    # 2. Záložní poskytovatel 1: Tmpfiles.org
     try:
-        print("  [2/4] Zkouším Litterbox (72h)...")
-        cmd_lit = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", "time=72h", "-F", f"fileToUpload=@{str(video_p)}", "https://litterbox.catbox.moe/resources/internals/api.php"]
-        res = subprocess.run(cmd_lit, capture_output=True, text=True)
-        url = res.stdout.strip()
-        if res.returncode == 0 and url.startswith("http"):
-            print(f"  -> Litterbox úspěch: {url}")
-            return url
-    except Exception as e:
-        print(f"  ⚠️ Litterbox selhalo: {e}")
-
-    # 3. Záložní poskytovatel 2: Tmpfiles.org
-    try:
-        print("  [3/4] Zkouším tmpfiles.org...")
+        print("  [2/4] Zkouším tmpfiles.org...")
         cmd_tmp = ["curl", "-s", "--max-time", "120", "-F", f"file=@{str(video_p)}", "https://tmpfiles.org/api/v1/upload"]
         res = subprocess.run(cmd_tmp, capture_output=True, text=True)
         if res.returncode == 0 and res.stdout:
@@ -176,6 +164,18 @@ def upload_temp_video(video_path: Path) -> str:
                 return direct_url
     except Exception as e:
         print(f"  ⚠️ Tmpfiles.org selhalo: {e}")
+
+    # 3. Záložní poskytovatel 2: Litterbox (max 1 GB, dočasný 72h hosting od Catboxu)
+    try:
+        print("  [3/4] Zkouším Litterbox (72h)...")
+        cmd_lit = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", "time=72h", "-F", f"fileToUpload=@{str(video_p)}", "https://litterbox.catbox.moe/resources/internals/api.php"]
+        res = subprocess.run(cmd_lit, capture_output=True, text=True)
+        url = res.stdout.strip()
+        if res.returncode == 0 and url.startswith("http"):
+            print(f"  -> Litterbox úspěch: {url}")
+            return url
+    except Exception as e:
+        print(f"  ⚠️ Litterbox selhalo: {e}")
 
     # 4. Záložní poskytovatel 3: Uguu.se (max 128 MB, retence jen 3 hodiny - nouzovka)
     try:
