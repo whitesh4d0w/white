@@ -139,17 +139,19 @@ def upload_temp_video(video_path: Path) -> str:
     file_size_mb = video_p.stat().st_size / (1024 * 1024)
     print(f"📦 Nahrávám video ({file_size_mb:.1f} MB) pro veřejný odkaz pro Buffer...")
 
-    # 1. Primární poskytovatel: x0.at (max 512 MB, retence 3-100 dní, přímý MP4 link)
+    # 1. Primární poskytovatel: Uguu.se (jediný spolehlivě prochází přes Buffer validaci, retence 3h nevadí při shareNow)
     try:
-        print("  [1/4] Zkouším x0.at...")
-        cmd_x0 = ["curl", "-s", "--max-time", "120", "-F", f"file=@{str(video_p)}", "https://x0.at"]
-        res = subprocess.run(cmd_x0, capture_output=True, text=True)
-        url = res.stdout.strip()
-        if res.returncode == 0 and url.startswith("http"):
-            print(f"  -> x0.at úspěch: {url}")
-            return url
+        print("  [1/4] Zkouším Uguu.se...")
+        cmd_uguu = ["curl", "-s", "--max-time", "90", "-F", f"files[]=@{str(video_p)}", "https://uguu.se/upload.php"]
+        res = subprocess.run(cmd_uguu, capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip().startswith("{"):
+            data = json.loads(res.stdout)
+            if data.get("success") and data.get("files"):
+                url = data["files"][0]["url"]
+                print(f"  -> Uguu.se úspěch: {url}")
+                return url
     except Exception as e:
-        print(f"  ⚠️ x0.at selhalo: {e}")
+        print(f"  ⚠️ Uguu.se selhalo: {e}")
 
     # 2. Záložní poskytovatel 1: Tmpfiles.org
     try:
@@ -177,19 +179,17 @@ def upload_temp_video(video_path: Path) -> str:
     except Exception as e:
         print(f"  ⚠️ Litterbox selhalo: {e}")
 
-    # 4. Záložní poskytovatel 3: Uguu.se (max 128 MB, retence jen 3 hodiny - nouzovka)
+    # 4. Záložní poskytovatel 3: x0.at
     try:
-        print("  [4/4] Zkouším Uguu.se...")
-        cmd_uguu = ["curl", "-s", "--max-time", "90", "-F", f"files[]=@{str(video_p)}", "https://uguu.se/upload.php"]
-        res = subprocess.run(cmd_uguu, capture_output=True, text=True)
-        if res.returncode == 0 and res.stdout.strip().startswith("{"):
-            data = json.loads(res.stdout)
-            if data.get("success") and data.get("files"):
-                url = data["files"][0]["url"]
-                print(f"  -> Uguu.se úspěch: {url}")
-                return url
+        print("  [4/4] Zkouším x0.at...")
+        cmd_x0 = ["curl", "-s", "--max-time", "120", "-F", f"file=@{str(video_p)}", "https://x0.at"]
+        res = subprocess.run(cmd_x0, capture_output=True, text=True)
+        url = res.stdout.strip()
+        if res.returncode == 0 and url.startswith("http"):
+            print(f"  -> x0.at úspěch: {url}")
+            return url
     except Exception as e:
-        print(f"  ⚠️ Uguu.se selhalo: {e}")
+        print(f"  ⚠️ x0.at selhalo: {e}")
 
     raise RuntimeError("Všichni 4 hostingoví poskytovatelé pro Buffer selhali! Zkontroluj internetové připojení.")
 
@@ -222,7 +222,7 @@ def post_video_to_buffer_queue(video_path: str, caption: str, channel_filter: st
             "text": caption,
             "channelId": channel_id,
             "schedulingType": "automatic",
-            "mode": "addToQueue",
+            "mode": "shareNow",
             "assets": [
                 {
                     "video": {
