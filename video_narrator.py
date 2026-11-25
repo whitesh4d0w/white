@@ -437,11 +437,12 @@ def select_clip_sequence(
                 "effect": "zoom" if idx % 2 == 1 else "normal",
             })
 
-    # Assign raw montage preview durations (2.8s-3.2s per clip so Gemini sees crisp action)
+    # Assign raw montage preview durations (2.0s when >14 candidates, else 3.0s)
     cursor = 0.0
+    per_clip_preview = 2.0 if len(plan) > 14 else 3.0
     for idx, item in enumerate(plan):
         avail = max(1.0, item["src_dur"] - item["start_trim"])
-        preview_dur = round(min(3.0, avail), 3)
+        preview_dur = round(min(per_clip_preview, avail), 3)
         item["index"] = idx
         item["preview_dur"] = preview_dur
         item["raw_start"] = round(cursor, 3)
@@ -529,7 +530,7 @@ def _build_vision_prompt(
     )
     past_str = ", ".join(f'"{t}"' for t in recent_titles[-12:]) if recent_titles else "None"
     n_candidates = len(plan)
-    min_sel = min(6, n_candidates)
+    min_sel = min(8, n_candidates)
     max_sel = min(target_clips, n_candidates)
 
     mode_guidance = (
@@ -600,7 +601,7 @@ def _validate_selected_indices(
     raw_selected: Any,
     candidate_count: int,
     fallback_count: int,
-    min_selected: int = 6,
+    min_selected: int = 8,
     max_selected: int = 10,
 ) -> list[int]:
     """Validate optional `selected_indices` from Vision JSON with safe sequential fallback."""
@@ -631,7 +632,7 @@ def _parse_and_validate_vision_json(
     expected_count: int,
     fallback_category: str,
     candidate_count: int | None = None,
-    min_selected: int = 6,
+    min_selected: int = 8,
     max_selected: int = 10,
 ) -> dict[str, Any]:
     """Parse Gemini Vision JSON output, validate optional `selected_indices`, and verify segment parity."""
@@ -1319,10 +1320,10 @@ def create_narrated_video_sequence(
     combined_audio_path = os.path.join(temp_dir, f"{run_id}_voice.wav")
     synced_video_path = os.path.join(temp_dir, f"{run_id}_synced.mp4")
 
-    # 1. Discover clips & build raw silent montage (~14 candidates so Director can drop outliers)
+    # 1. Discover clips & build raw silent montage (~20 candidates so Director can pick 8-10 cohesive clips)
     print("   [VN 1/5] 📂 Skenuji knihovnu B-roll a vybírám neokoukané klipy...", flush=True)
     clips = discover_broll_clips(broll_dir, probe_all=False)
-    candidate_clips = min(len(clips), max(target_clips + 4, 14))
+    candidate_clips = min(len(clips), max(target_clips + 10, 20))
     effective_mode, selected_category, plan = select_clip_sequence(
         clips=clips,
         mode=mode,
@@ -1344,11 +1345,14 @@ def create_narrated_video_sequence(
         if item["start_trim"] >= real_dur - 1.0:
             item["start_trim"] = max(0.0, round(real_dur - 2.2, 2))
         avail = max(1.0, real_dur - item["start_trim"])
-        preview_dur = round(min(3.0, avail), 3)
+        per_clip_preview = 2.0 if len(plan) > 14 else 3.0
+        preview_dur = round(min(per_clip_preview, avail), 3)
         item["preview_start"] = round(cursor, 3)
+        item["raw_start"] = item["preview_start"]
         item["preview_dur"] = preview_dur
         cursor += preview_dur
         item["preview_end"] = round(cursor, 3)
+        item["raw_end"] = item["preview_end"]
 
     print(
         f"   [VN 2/5] 🎞️ Renderuji tichou montáž ({len(plan)} klipů z {len(clips)} dostupných, režim {effective_mode.upper()}, kategorie {selected_category.upper()})...",
