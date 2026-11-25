@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
-import os, sys, json, urllib.request, urllib.error, subprocess
+"""
+tiktok_buffer.py - Automated TikTok Posting via Buffer GraphQL API.
+100% Standard Library & System Curl - ZERO PIP DEPENDENCIES NEEDED!
+"""
+
+import os
+import sys
+import json
+import urllib.request
+import urllib.error
+import subprocess
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
+# Načtení .env čistě pomocí standardní knihovny bez nutnosti balíčku 'dotenv'
 def load_env_file():
     env_file = BASE_DIR / ".env"
     if env_file.exists():
@@ -13,87 +24,126 @@ def load_env_file():
                     line = line.strip()
                     if line and not line.startswith("#") and "=" in line:
                         k, v = line.split("=", 1)
-                        k, v = k.strip(), v.strip().strip('"').strip("'")
-                        if k and v: os.environ[k] = v
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        if k and v:
+                            os.environ[k] = v
         except Exception as e:
-            print(f"Varování .env: {e}")
+            print(f"Varování: Nepodařilo se přečíst .env: {e}")
 
 load_env_file()
+
 BUFFER_API_URL = "https://api.buffer.com"
+
 
 def get_headers():
     load_env_file()
     key = os.getenv("BUFFER_API_KEY", "").strip()
     if not key:
-        raise ValueError("BUFFER_API_KEY chybí v .env!")
-    return {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+        raise ValueError(f"BUFFER_API_KEY chybí v {BASE_DIR / '.env'}! Přidej ho tam (https://publish.buffer.com/settings/api).")
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+
 
 def query_graphql(query: str, variables: dict = None) -> dict:
     payload = {"query": query}
-    if variables: payload["variables"] = variables
+    if variables:
+        payload["variables"] = variables
     data_bytes = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(BUFFER_API_URL, data=data_bytes, headers=get_headers(), method="POST")
+
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            res_body = resp.read().decode("utf-8")
+            data = json.loads(res_body)
             if "errors" in data:
                 raise RuntimeError(f"Buffer GraphQL Error: {json.dumps(data['errors'], indent=2)}")
             return data.get("data", {})
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Buffer HTTP {e.code}: {e.read().decode('utf-8')}")
+        err_body = e.read().decode("utf-8")
+        raise RuntimeError(f"Buffer API HTTP {e.code}: {err_body}")
     except Exception as e:
-        raise RuntimeError(f"Chyba spojení s Bufferem: {e}")
+        raise RuntimeError(f"Chyba spojení s Buffer API: {e}")
+
 
 def list_buffer_channels():
-    org_query = "query { account { organizations { id name } } }"
-    orgs = query_graphql(org_query).get("account", {}).get("organizations", [])
-    if not orgs: raise RuntimeError("V Buffer účtu nebyla nalezena organizace.")
-    channels_query = "query($input: ChannelsInput!) { channels(input: $input) { id name displayName service isQueuePaused } }"
-    all_ch = []
-    for org in orgs:
-        ch_data = query_graphql(channels_query, {"input": {"organizationId": org["id"]}})
-        for ch in ch_data.get("channels", []):
-            ch["organizationId"] = org["id"]
-            all_ch.append(ch)
-    return all_ch
+    """Vrátí všechny připojené sociální kanály v Bufferu."""
+    org_query = """
+    query GetOrganizations {
+      account {
+        organizations {
+          id
+          name
+        }
+      }
+    }
+    """
+    org_data = query_graphql(org_query)
+    organizations = org_data.get("account", {}).get("organizations", [])
+    if not organizations:
+        raise RuntimeError("V Buffer účtu nebyla nalezena žádná organizace.")
+
+    all_channels = []
+    channels_query = """
+    query GetChannels($input: ChannelsInput!) {
+      channels(input: $input) {
+        id
+        name
+        displayName
+        service
+        isQueuePaused
+      }
+    }
+    """
+    for org in organizations:
+        org_id = org["id"]
+        ch_data = query_graphql(channels_query, {"input": {"organizationId": org_id}})
+        channels = ch_data.get("channels", [])
+        for ch in channels:
+            ch["organizationId"] = org_id
+            all_channels.append(ch)
+
+    return all_channels
+
 
 def get_tiktok_channel_id(channel_filter: str = None) -> str:
-    env_id = os.getenv("BUFFER_TIKTOK_CHANNEL_ID", "").strip()
-    if env_id and not channel_filter: return env_id
+    """Najde správný TikTok kanál."""
+    env_ch_id = os.getenv("BUFFER_TIKTOK_CHANNEL_ID", "").strip()
+    if env_ch_id and not channel_filter:
+        return env_ch_id
+
     channels = list_buffer_channels()
-    tt = [c for c in channels if c.get("service") == "tiktok"]
-    if not tt: raise RuntimeError("V Bufferu nebyl nalezen žádný TikTok kanál!")
+    tiktok_channels = [ch for ch in channels if ch.get("service") == "tiktok"]
+
+    if not tiktok_channels:
+        available = ", ".join([f"{c.get('service')}:{c.get('displayName') or c.get('name')}" for c in channels])
+        raise RuntimeError(f"V Bufferu nebyl nalezen žádný TikTok kanál! Dostupné kanály: {available}")
+
     if channel_filter:
-        for c in tt:
-            if channel_filter.lower() in (c.get("displayName") or c.get("name") or "").lower():
-                return c["id"]
-    return tt[0]["id"]
+        for ch in tiktok_channels:
+            name = (ch.get("displayName") or ch.get("name") or "").lower()
+            if channel_filter.lower() in name:
+                return ch["id"]
+
+    return tiktok_channels[0]["id"]
+
 
 def upload_temp_video(video_path: Path) -> str:
+    """Nahraje video pomocí spolehlivého multi-hosting řetězce (Catbox -> Litterbox 72h -> tmpfiles -> Uguu)."""
     video_p = Path(video_path).resolve()
-    if not video_p.exists(): raise FileNotFoundError(f"Video neexistuje: {video_p}")
-    size_mb = video_p.stat().st_size / (1024 * 1024)
-    print(f"📦 Nahrávám video ({size_mb:.1f} MB) pro Buffer...")
+    if not video_p.exists():
+        raise FileNotFoundError(f"Video neexistuje: {video_p}")
 
-    # 1. Primární: Uguu.se (rychlý, přímý MP4 stream, max 128 MB, retence 3h)
-    try:
-        print("  [1/4] Zkouším Uguu.se...")
-        cmd = ["curl", "-s", "--max-time", "90", "-F", f"files[]=@{str(video_p)}", "https://uguu.se/upload.php"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode == 0 and res.stdout.strip().startswith("{"):
-            d = json.loads(res.stdout)
-            if d.get("success") and d.get("files"):
-                url = d["files"][0]["url"]
-                print(f"  -> Uguu.se úspěch: {url}")
-                return url
-    except Exception as e:
-        print(f"  ⚠️ Uguu.se selhalo: {e}")
+    file_size_mb = video_p.stat().st_size / (1024 * 1024)
+    print(f"📦 Nahrávám video ({file_size_mb:.1f} MB) pro veřejný odkaz pro Buffer...")
 
-    # 2. Záloha 1: Catbox.moe (max 200 MB, trvalý přímý link)
+    # 1. Primární poskytovatel: Catbox.moe (max 200 MB, permanentní přímý MP4 link - nevyprší ve frontě Bufferu)
     try:
-        print("  [2/4] Zkouším Catbox.moe...")
-        cmd = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", f"fileToUpload=@{str(video_p)}", "https://catbox.moe/user/api.php"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        print("  [1/4] Zkouším Catbox.moe...")
+        cmd_cat = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", f"fileToUpload=@{str(video_p)}", "https://catbox.moe/user/api.php"]
+        res = subprocess.run(cmd_cat, capture_output=True, text=True)
         url = res.stdout.strip()
         if res.returncode == 0 and url.startswith("http"):
             print(f"  -> Catbox.moe úspěch: {url}")
@@ -101,11 +151,11 @@ def upload_temp_video(video_path: Path) -> str:
     except Exception as e:
         print(f"  ⚠️ Catbox.moe selhalo: {e}")
 
-    # 3. Záloha 2: Litterbox (dočasný Catbox fallback)
+    # 2. Záložní poskytovatel 1: Litterbox (max 1 GB, dočasný 72h hosting od Catboxu)
     try:
-        print("  [3/4] Zkouším Litterbox...")
-        cmd = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", "time=1h", "-F", f"fileToUpload=@{str(video_p)}", "https://litterbox.catbox.moe/resources/internals/api.php"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        print("  [2/4] Zkouším Litterbox (72h)...")
+        cmd_lit = ["curl", "-s", "--max-time", "120", "-A", "Mozilla/5.0", "-F", "reqtype=fileupload", "-F", "time=72h", "-F", f"fileToUpload=@{str(video_p)}", "https://litterbox.catbox.moe/resources/internals/api.php"]
+        res = subprocess.run(cmd_lit, capture_output=True, text=True)
         url = res.stdout.strip()
         if res.returncode == 0 and url.startswith("http"):
             print(f"  -> Litterbox úspěch: {url}")
@@ -113,23 +163,39 @@ def upload_temp_video(video_path: Path) -> str:
     except Exception as e:
         print(f"  ⚠️ Litterbox selhalo: {e}")
 
-    # 4. Záloha 3: Tmpfiles.org
+    # 3. Záložní poskytovatel 2: Tmpfiles.org
     try:
-        print("  [4/4] Zkouším tmpfiles.org...")
-        cmd = ["curl", "-s", "--max-time", "120", "-F", f"file=@{str(video_p)}", "https://tmpfiles.org/api/v1/upload"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        print("  [3/4] Zkouším tmpfiles.org...")
+        cmd_tmp = ["curl", "-s", "--max-time", "120", "-F", f"file=@{str(video_p)}", "https://tmpfiles.org/api/v1/upload"]
+        res = subprocess.run(cmd_tmp, capture_output=True, text=True)
         if res.returncode == 0 and res.stdout:
-            d = json.loads(res.stdout)
-            if d.get("status") == "success":
-                url = d["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                print(f"  -> Tmpfiles.org úspěch: {url}")
-                return url
+            res_json = json.loads(res.stdout)
+            if res_json.get("status") == "success":
+                direct_url = res_json["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                print(f"  -> Tmpfiles.org úspěch: {direct_url}")
+                return direct_url
     except Exception as e:
         print(f"  ⚠️ Tmpfiles.org selhalo: {e}")
 
-    raise RuntimeError("Všichni 4 hostingoví poskytovatelé selhali!")
+    # 4. Záložní poskytovatel 3: Uguu.se (max 128 MB, retence jen 3 hodiny - nouzovka)
+    try:
+        print("  [4/4] Zkouším Uguu.se...")
+        cmd_uguu = ["curl", "-s", "--max-time", "90", "-F", f"files[]=@{str(video_p)}", "https://uguu.se/upload.php"]
+        res = subprocess.run(cmd_uguu, capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip().startswith("{"):
+            data = json.loads(res.stdout)
+            if data.get("success") and data.get("files"):
+                url = data["files"][0]["url"]
+                print(f"  -> Uguu.se úspěch: {url}")
+                return url
+    except Exception as e:
+        print(f"  ⚠️ Uguu.se selhalo: {e}")
+
+    raise RuntimeError("Všichni 4 hostingoví poskytovatelé pro Buffer selhali! Zkontroluj internetové připojení.")
+
 
 def post_video_to_buffer_queue(video_path: str, caption: str, channel_filter: str = None) -> dict:
+    """Zařadí video do Buffer fronty pro TikTok."""
     video_p = Path(video_path).resolve()
     channel_id = get_tiktok_channel_id(channel_filter)
     video_url = upload_temp_video(video_p)
@@ -138,43 +204,68 @@ def post_video_to_buffer_queue(video_path: str, caption: str, channel_filter: st
     mutation CreateVideoPost($input: CreatePostInput!) {
       createPost(input: $input) {
         ... on PostActionSuccess {
-          post { id dueAt status }
+          post {
+            id
+            dueAt
+            status
+          }
         }
-        ... on MutationError { message }
+        ... on MutationError {
+          message
+        }
       }
     }
     """
+
     variables = {
         "input": {
             "text": caption,
             "channelId": channel_id,
             "schedulingType": "automatic",
             "mode": "addToQueue",
-            "assets": [{"video": {"url": video_url}}]
+            "assets": [
+                {
+                    "video": {
+                        "url": video_url,
+                    }
+                }
+            ],
         }
     }
-    print(f"🚀 Zařazuji video do Buffer fronty pro kanál {channel_id}...")
+
+    print(f"🚀 Odesílám video do fronty Bufferu pro kanál {channel_id}...")
     result = query_graphql(mutation, variables)
     create_post = result.get("createPost", {})
+
     if "message" in create_post:
         raise RuntimeError(f"Buffer odmítl video: {create_post['message']}")
+
     post_info = create_post.get("post", {})
-    print(f"✅ Video úspěšně zařazeno do Buffer fronty! Post ID: {post_info.get('id')}")
+    post_id = post_info.get("id")
+    due_at = post_info.get("dueAt")
+    print(f"✅ Video úspěšně zařazeno do Buffer fronty!")
+    print(f"   Post ID: {post_id}")
+    print(f"   Naplánovaný čas (UTC): {due_at}")
     return post_info
+
 
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--list-channels", action="store_true")
-    p.add_argument("--video")
-    p.add_argument("--caption", default="#Shorts #Viral")
-    p.add_argument("--channel")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="Buffer TikTok Uploader CLI")
+    parser.add_argument("--list-channels", action="store_true", help="Vypíše všechny připojené kanály a jejich ID")
+    parser.add_argument("--video", help="Cesta k video souboru")
+    parser.add_argument("--caption", default="#Shorts #Viral", help="Popisek videa")
+    parser.add_argument("--channel", help="Filtr názvu kanálu (např. 'GTA' nebo 'Minecraft')")
+
+    args = parser.parse_args()
+
     if args.list_channels:
-        chs = list_buffer_channels()
-        print(f"Nalezeno {len(chs)} kanálů:")
-        for c in chs: print(f"- ID: {c['id']} | Služba: {c['service']} | Název: {c.get('displayName') or c.get('name')}")
+        print("🔍 Načítám připojené kanály z Bufferu...")
+        channels = list_buffer_channels()
+        print(f"\nNalezeno {len(channels)} kanálů:")
+        for ch in channels:
+            print(f"- ID: {ch['id']} | Služba: {ch['service']} | Název: {ch.get('displayName') or ch.get('name')}")
     elif args.video:
         post_video_to_buffer_queue(args.video, args.caption, args.channel)
     else:
-        p.print_help()
+        parser.print_help()
