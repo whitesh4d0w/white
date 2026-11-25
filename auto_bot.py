@@ -1274,7 +1274,7 @@ def _run_cycle_locked(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--schedule", default=None, help="Čas publikace v CET (např. 17:00)")
+    p.add_argument("--schedule", default=None, help="Čas publikace v Europe/Prague (např. 19:00 nebo 00:30)")
     p.add_argument("--privacy", default="unlisted", choices=["public", "unlisted", "private"])
     p.add_argument("--dry-run", action="store_true", help="Vyrenderovat video lokálně bez uploadu")
     p.add_argument("--no-upload", action="store_true", help="Alias pro --dry-run: přeskočit upload na YouTube/TikTok")
