@@ -1089,7 +1089,57 @@ def _run_legacy_fallback(mode: str, key: str, ts: int):
     return success, out_path, title, description, script, category, chosen_mode, used_clips
 
 
+def _acquire_run_lock():
+    """Prevent overlapping cron executions from corrupting history.json."""
+    lock_path = os.path.join(TEMP_DIR, "auto_bot.lock")
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    fh = open(lock_path, "w")
+    try:
+        import fcntl
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except ImportError:
+        pass
+    except OSError:
+        fh.close()
+        return None
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
+def _release_run_lock(fh) -> None:
+    if not fh:
+        return
+    try:
+        import fcntl
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        fh.close()
+    except Exception:
+        pass
+
+
 def run_cycle(
+    schedule: str = None,
+    privacy: str = "unlisted",
+    dry_run: bool = False,
+    mode: str = "auto",
+    no_upload: bool = False,
+):
+    lock_fh = _acquire_run_lock()
+    if lock_fh is None:
+        print("⚠️ Jiná instance auto_bot.py právě běží (lockfile aktivní). Ukončuji tento souběžný běh.")
+        return
+
+    try:
+        _run_cycle_locked(schedule=schedule, privacy=privacy, dry_run=dry_run, mode=mode, no_upload=no_upload)
+    finally:
+        _release_run_lock(lock_fh)
+
+
+def _run_cycle_locked(
     schedule: str = None,
     privacy: str = "unlisted",
     dry_run: bool = False,
@@ -1183,14 +1233,14 @@ def run_cycle(
 
     if not success:
         print("Chyba při renderování videa!")
-        return
+        sys.exit(1)
 
     print(f"\nUSPECH! Video vyrenderováno: {os.path.basename(out_path)}")
 
     # 4. Upload & Uložení do historie
     if not skip_upload:
         print("\n[4/5] Nahrávám na YouTube (100% bezpečné pro monetizaci)...")
-        vid_url = upload_short(out_path, title=title, description=description, privacy=privacy, schedule=schedule, delete_after=False)
+        vid_url = upload_short(out_path, title=title, description=description, privacy=privacy, schedule=schedule, delete_after=False, category=category)
         if vid_url:
             save_to_history(title, script, category=category, used_clips=used_clips, mode=chosen_mode)
             print(f"-> Téma '{title}' úspěšně uloženo do historie kanálu.")
@@ -1205,13 +1255,16 @@ def run_cycle(
             except Exception as e:
                 print(f"⚠️ Varování: Upload na TikTok přes Buffer selhal: {e}")
 
-        # Úklid lokálního vyrenderovaného videa
-        try:
-            if os.path.exists(out_path):
-                os.remove(out_path)
-                print(f"Čistím disk: smazáno vyrenderované video {os.path.basename(out_path)}.")
-        except Exception:
-            pass
+        # Úklid lokálního vyrenderovaného videa pouze pokud upload na YouTube uspěl
+        if vid_url:
+            try:
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+                    print(f"Čistím disk: smazáno vyrenderované video {os.path.basename(out_path)}.")
+            except Exception:
+                pass
+        else:
+            print(f"⚠️ Video {os.path.basename(out_path)} ponecháno na disku, protože YouTube upload nevrátil URL.")
     else:
         print("[DRY RUN / NO UPLOAD] Nahrávání přeskočeno, video zachováno.")
 

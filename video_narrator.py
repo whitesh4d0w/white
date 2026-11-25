@@ -457,11 +457,14 @@ def render_raw_montage(plan: list[dict[str, Any]], montage_raw_path: str) -> str
     concat_labels: list[str] = []
 
     for idx, item in enumerate(plan):
-        inputs.extend(["-i", item["clip_path"]])
         start_trim = item["start_trim"]
         preview_dur = item["preview_dur"]
+        if start_trim > 0.05:
+            inputs.extend(["-ss", f"{start_trim:.3f}", "-i", item["clip_path"]])
+        else:
+            inputs.extend(["-i", item["clip_path"]])
         filters.append(
-            f"[{idx}:v]trim=start={start_trim:.3f}:duration={preview_dur:.3f},"
+            f"[{idx}:v]trim=duration={preview_dur:.3f},"
             f"setpts=PTS-STARTPTS,fps={FPS},"
             f"scale=720:1280:force_original_aspect_ratio=increase,"
             f"crop=720:1280,setsar=1,format=yuv420p[v{idx}]"
@@ -547,9 +550,9 @@ CRITICAL DIRECTOR & SCRIPTWRITER RULES:
 4. Output "segments" with "index" 0 through len(selected_indices) - 1, matching "selected_indices" 1:1 in order:
    - "visual_summary": 1 concise factual sentence describing what literally happens in that chosen clip.
    - "narration": 6-10 words max of continuous voiceover directly tied to that clip's visuals.
-     * Beat 0 MUST be an immediate scroll-stopping hook referencing Beat 0's visuals.
+     * Beat 0 MUST be an ultra-punchy 3-5 word scroll-stopping hook referencing Beat 0's visuals.
      * Middle beats MUST escalate the same topic using crisp transitions tied to each clip's visuals.
-     * Final beat MUST deliver the payoff/climax + quick CTA question.
+     * Final beat MUST deliver the payoff/climax AND end with a classic spoken Like & Subscribe CTA (e.g. "Hit like and subscribe for daily GTA 6!") within 7-10 words total.
 5. Do NOT reuse any of these recent titles: [{past_str}].
 6. "title" must be punchy and <= 55 characters.
 7. "description" must be 1-2 engaging teaser sentences + a question for comments (NO hashtags, NO repeating the script).
@@ -960,30 +963,64 @@ def _synthesize_edge_tts(text: str, out_path: str) -> None:
         asyncio.run(_run())
 
 
+def _is_encoded_audio_header(raw_audio_path: str) -> bool:
+    """Detect common audio container magic bytes to avoid running FFmpeg twice on raw PCM."""
+    try:
+        with open(raw_audio_path, "rb") as fh:
+            head = fh.read(16)
+    except OSError:
+        return True
+    if head.startswith((b"RIFF", b"ID3", b"OggS", b"fLaC")):
+        return True
+    if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
+        return True  # MP3 / ADTS frame sync
+    return False
+
+
 def _normalize_audio_to_frame_aligned_wav(raw_audio_path: str, wav_out_path: str) -> float:
     """
     Convert encoded audio or raw Gemini PCM (s16le 24kHz mono) into 44.1 kHz
     mono 16-bit WAV padded to an exact multiple of SAMPLES_PER_FRAME (1470).
     Returns exact duration in seconds.
     """
-    conv_cmd = [
-        FFMPEG_BIN, "-y", "-nostdin",
-        "-i", raw_audio_path,
-        "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le",
-        wav_out_path,
-    ]
-    res = subprocess.run(conv_cmd, capture_output=True, text=True, timeout=30)
-    if res.returncode != 0:
-        pcm_cmd = [
+    is_encoded = _is_encoded_audio_header(raw_audio_path)
+    if is_encoded:
+        cmd = [
+            FFMPEG_BIN, "-y", "-nostdin",
+            "-i", raw_audio_path,
+            "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le",
+            wav_out_path,
+        ]
+    else:
+        cmd = [
             FFMPEG_BIN, "-y", "-nostdin",
             "-f", "s16le", "-ar", "24000", "-ac", "1",
             "-i", raw_audio_path,
             "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le",
             wav_out_path,
         ]
-        res_pcm = subprocess.run(pcm_cmd, capture_output=True, text=True, timeout=30)
-        if res_pcm.returncode != 0:
-            raise VideoNarratorError(f"FFmpeg audio normalization failed: {(res_pcm.stderr or '')[-400:]}")
+
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if res.returncode != 0:
+        fallback_cmd = (
+            [
+                FFMPEG_BIN, "-y", "-nostdin",
+                "-f", "s16le", "-ar", "24000", "-ac", "1",
+                "-i", raw_audio_path,
+                "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le",
+                wav_out_path,
+            ]
+            if is_encoded
+            else [
+                FFMPEG_BIN, "-y", "-nostdin",
+                "-i", raw_audio_path,
+                "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le",
+                wav_out_path,
+            ]
+        )
+        res_fb = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=30)
+        if res_fb.returncode != 0:
+            raise VideoNarratorError(f"FFmpeg audio normalization failed: {(res_fb.stderr or '')[-400:]}")
 
     with wave.open(wav_out_path, "rb") as w_in:
         params = w_in.getparams()
@@ -1198,11 +1235,15 @@ def render_synced_video(segments: list[dict[str, Any]], synced_video_path: str) 
             speed_factor = min(1.35, target_dur / max(0.1, src_dur))
             needed_src = src_dur
 
-        inputs.extend(["-i", seg["clip_path"]])
         if src_dur - start_trim >= needed_src + 0.02:
             eff_trim = start_trim
         else:
             eff_trim = max(0.0, src_dur - needed_src)
+
+        if eff_trim > 0.05:
+            inputs.extend(["-ss", f"{eff_trim:.4f}", "-i", seg["clip_path"]])
+        else:
+            inputs.extend(["-i", seg["clip_path"]])
 
         pad_dur = max(0.35, target_dur - (src_dur - eff_trim) * speed_factor + 0.25)
 
@@ -1223,7 +1264,7 @@ def render_synced_video(segments: list[dict[str, Any]], synced_video_path: str) 
             )
 
         filters.append(
-            f"[{idx}:v]trim=start={eff_trim:.4f},setpts={speed_factor:.6f}*(PTS-STARTPTS),"
+            f"[{idx}:v]setpts={speed_factor:.6f}*(PTS-STARTPTS),"
             f"fps={FPS},tpad=stop_mode=clone:stop_duration={pad_dur:.3f},"
             f"trim=start_frame=0:end_frame={target_frames},setpts=PTS-STARTPTS,"
             f"{scale_crop},format=yuv420p[v{idx}]"
