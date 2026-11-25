@@ -1,4 +1,6 @@
-# Citlivá data & API klíče
+# ==========================================
+# Citlivá data & API klíče (NIKDY NEPŮŠOVAT!)
+# ==========================================
 .env
 .env.*
 !.env.example
@@ -7,7 +9,10 @@ token*.json
 credentials.json
 *.pem
 *.key
+
+# ==========================================
 # Dočasné soubory, rendery & média
+# ==========================================
 temp/
 downloads/
 output/
@@ -24,10 +29,22 @@ assets/sfx/
 *.ass
 *.srt
 *.log
+
+# ==========================================
 # Python prostředí & cache
+# ==========================================
 __pycache__/
 *.py[cod]
+*$py.class
 venv/
 .venv/
+env/
+.env_local/
+
+# ==========================================
+# Systémové soubory
+# ==========================================
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/

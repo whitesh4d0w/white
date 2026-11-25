@@ -213,14 +213,18 @@ def probe_media_duration(file_path: str) -> float:
     return 0.0
 
 
-def _extract_recent_history(history: list[dict] | None) -> tuple[set[str], list[str], list[str]]:
-    """Extract recently used clip basenames, titles, and categories from history."""
-    recent_clips: set[str] = set()
+def _extract_recent_history(history: list[dict] | None) -> tuple[dict[str, int], list[str], list[str]]:
+    """
+    Extract clip recency/usage counts, recent titles, and recent categories from history.
+    Returns (clip_last_age_or_score, recent_titles, recent_categories) where
+    clip_recency maps clip basename -> recency rank (higher = used more recently).
+    """
+    clip_recency: dict[str, int] = {}
     recent_titles: list[str] = []
     recent_categories: list[str] = []
 
     if not history:
-        return recent_clips, recent_titles, recent_categories
+        return clip_recency, recent_titles, recent_categories
 
     for entry in history[-15:]:
         if not isinstance(entry, dict):
@@ -232,22 +236,23 @@ def _extract_recent_history(history: list[dict] | None) -> tuple[set[str], list[
         if isinstance(cat, str) and cat.strip().lower() in VALID_CATEGORIES:
             recent_categories.append(cat.strip().lower())
 
-    for entry in history[-8:]:
+    # Scan full history (newest has highest recency score) so all 150+ clips rotate before repeating
+    for age_idx, entry in enumerate(history, start=1):
         if not isinstance(entry, dict):
             continue
         clip_name = entry.get("clip_name")
         if isinstance(clip_name, str) and clip_name.strip():
-            recent_clips.add(os.path.basename(clip_name.strip()))
+            clip_recency[os.path.basename(clip_name.strip())] = age_idx
         used = entry.get("used_clips")
         if isinstance(used, list):
             for name in used:
                 if isinstance(name, str) and name.strip():
-                    recent_clips.add(os.path.basename(name.strip()))
+                    clip_recency[os.path.basename(name.strip())] = age_idx
 
-    return recent_clips, recent_titles, recent_categories
+    return clip_recency, recent_titles, recent_categories
 
 
-def discover_broll_clips(broll_dir: str) -> list[dict[str, Any]]:
+def discover_broll_clips(broll_dir: str, probe_all: bool = False) -> list[dict[str, Any]]:
     """Discover valid MP4 B-roll clips in `broll_dir` with classification and durations."""
     if not broll_dir or not os.path.isdir(broll_dir):
         raise VideoNarratorError(f"B-roll directory does not exist: {broll_dir}")
@@ -262,7 +267,7 @@ def discover_broll_clips(broll_dir: str) -> list[dict[str, Any]]:
         except OSError:
             continue
 
-        dur = probe_media_duration(str(entry))
+        dur = probe_media_duration(str(entry)) if probe_all else 4.5
         if dur < 0.8:
             continue
 
@@ -279,13 +284,11 @@ def discover_broll_clips(broll_dir: str) -> list[dict[str, Any]]:
     return clips
 
 
-def _order_by_freshness(pool: list[dict[str, Any]], recent_clips: set[str]) -> list[dict[str, Any]]:
-    """Shuffle clips while placing unseen clips ahead of recently used ones."""
-    fresh = [c for c in pool if c["clip_name"] not in recent_clips]
-    stale = [c for c in pool if c["clip_name"] in recent_clips]
-    random.shuffle(fresh)
-    random.shuffle(stale)
-    return fresh + stale
+def _order_by_freshness(pool: list[dict[str, Any]], clip_recency: dict[str, int]) -> list[dict[str, Any]]:
+    """Order clips so never-seen clips come first (shuffled), then oldest-used clips."""
+    shuffled = list(pool)
+    random.shuffle(shuffled)
+    return sorted(shuffled, key=lambda c: clip_recency.get(c["clip_name"], 0))
 
 
 def select_clip_sequence(
@@ -303,7 +306,7 @@ def select_clip_sequence(
         raise VideoNarratorError(f"Unsupported mode '{mode}'. Expected one of {VALID_MODES}.")
 
     count = max(1, int(target_clips))
-    recent_clips, _, recent_categories = _extract_recent_history(history)
+    clip_recency, _, recent_categories = _extract_recent_history(history)
 
     # Group clips by semantic category
     by_cat: dict[str, list[dict[str, Any]]] = {c: [] for c in VALID_CATEGORIES}
@@ -334,8 +337,22 @@ def select_clip_sequence(
         effective_mode = mode
 
     cat_pool = by_cat.get(selected_category) or clips
-    ordered_cat = _order_by_freshness(cat_pool, recent_clips)
-    ordered_all = _order_by_freshness(clips, recent_clips)
+    ordered_cat = _order_by_freshness(cat_pool, clip_recency)
+    ordered_all = _order_by_freshness(clips, clip_recency)
+
+    # Build a combined freshness-ordered pool:
+    # 1) Unseen clips in the chosen category
+    # 2) Unseen clips from the rest of the library (prevents repeating used clips while fresh ones remain!)
+    # 3) Previously used clips in the chosen category (oldest first)
+    # 4) Previously used clips from the rest of the library (oldest first)
+    seen_names: set[str] = set()
+    unique_pool: list[dict[str, Any]] = []
+    unseen_cat = [c for c in ordered_cat if clip_recency.get(c["clip_name"], 0) == 0]
+    unseen_all = [c for c in ordered_all if clip_recency.get(c["clip_name"], 0) == 0]
+    for c in unseen_cat + unseen_all + ordered_cat + ordered_all:
+        if c["clip_name"] not in seen_names:
+            seen_names.add(c["clip_name"])
+            unique_pool.append(c)
 
     plan: list[dict[str, Any]] = []
 
@@ -352,10 +369,8 @@ def select_clip_sequence(
             detail_trim = min(0.6, max(0.0, hero["src_dur"] - 2.2))
             plan.append({**hero, "start_trim": round(detail_trim, 2), "effect": "breakdown_slowmo"})
 
-        # Remaining supporting clips: stay in category if >= 2 clips exist, else draw from ordered_all
-        supp_source = [c for c in ordered_cat if c["clip_name"] != hero["clip_name"]]
-        if not supp_source:
-            supp_source = [c for c in ordered_all if c["clip_name"] != hero["clip_name"]] or ordered_cat
+        # Remaining supporting clips: same-category fresh clips first, then fresh clips from ordered_all
+        supp_source = [c for c in unique_pool if c["clip_name"] != hero["clip_name"]] or ordered_cat
 
         for idx in range(len(plan), count):
             chosen = supp_source[(idx - len(plan)) % len(supp_source)]
@@ -368,18 +383,20 @@ def select_clip_sequence(
                 "effect": "zoom" if idx % 2 == 1 else "normal",
             })
     else:
-        # "news" multicut: keep thematic cohesion when category has >= 2 clips;
-        # if only 1 clip exists in category and no strict category was forced, mix all clips for visual variety.
-        if req_cat or len(ordered_cat) >= min(2, count):
-            pool = ordered_cat
-        else:
-            pool = ordered_all
+        # "news" multicut: use distinct clips across the entire library (same-category fresh first,
+        # topped up with fresh clips from other categories if category has < count unique clips).
+        pool = unique_pool
+        used_in_plan: set[str] = set()
 
         for idx in range(count):
-            candidates = [c for c in pool if not plan or c["clip_name"] != plan[-1]["clip_name"]]
-            if not candidates:
-                candidates = pool
-            chosen = candidates[idx % len(candidates)]
+            unused = [c for c in pool if c["clip_name"] not in used_in_plan]
+            if unused:
+                chosen = unused[0]
+            else:
+                non_adjacent = [c for c in pool if not plan or c["clip_name"] != plan[-1]["clip_name"]]
+                chosen = (non_adjacent or pool)[idx % len(non_adjacent or pool)]
+
+            used_in_plan.add(chosen["clip_name"])
             occ = sum(1 for p in plan if p["clip_name"] == chosen["clip_name"])
             max_trim = max(0.0, chosen["src_dur"] - 2.2)
             trim_start = round((occ * 1.5) % max_trim, 2) if max_trim > 0.2 else 0.0
@@ -626,11 +643,12 @@ def _call_vision_with_failover(
     for model_name in candidate_models:
         for attempt in range(1, 4):
             try:
+                print(f"      -> Vision analýza přes {model_name} (pokus {attempt}/3)...", flush=True)
                 config = types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.7,
                     thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    http_options=types.HttpOptions(timeout=90000),
+                    http_options=types.HttpOptions(timeout=35000),
                 )
                 try:
                     res = client.models.generate_content(
@@ -644,7 +662,7 @@ def _call_vision_with_failover(
                         fallback_cfg = types.GenerateContentConfig(
                             response_mime_type="application/json",
                             temperature=0.7,
-                            http_options=types.HttpOptions(timeout=90000),
+                            http_options=types.HttpOptions(timeout=35000),
                         )
                         res = client.models.generate_content(
                             model=model_name,
@@ -663,6 +681,7 @@ def _call_vision_with_failover(
 
             except Exception as exc:
                 last_error = exc
+                print(f"      ⚠️ {model_name} selhal: {str(exc)[:140]}", flush=True)
                 err = str(exc).lower()
                 if "404" in err or "not_found" in err or "invalid_argument" in err and "model" in err:
                     break
@@ -1069,7 +1088,8 @@ def create_narrated_video_sequence(
     synced_video_path = os.path.join(temp_dir, f"{run_id}_synced.mp4")
 
     # 1. Discover clips & build raw silent montage
-    clips = discover_broll_clips(broll_dir)
+    print("   [VN 1/5] 📂 Skenuji knihovnu B-roll a vybírám neokoukané klipy...", flush=True)
+    clips = discover_broll_clips(broll_dir, probe_all=False)
     effective_mode, selected_category, plan = select_clip_sequence(
         clips=clips,
         mode=mode,
@@ -1077,9 +1097,33 @@ def create_narrated_video_sequence(
         target_clips=target_clips,
         history=history,
     )
+
+    # Probe exact durations only for the selected clips in `plan` (0.2s vs 25s for 350 clips)
+    probed_cache: dict[str, float] = {}
+    cursor = 0.0
+    for item in plan:
+        cp = item["clip_path"]
+        if cp not in probed_cache:
+            probed_cache[cp] = probe_media_duration(cp)
+        real_dur = max(1.0, probed_cache[cp])
+        item["src_dur"] = real_dur
+        if item["start_trim"] >= real_dur - 1.0:
+            item["start_trim"] = max(0.0, round(real_dur - 2.2, 2))
+        avail = max(1.0, real_dur - item["start_trim"])
+        preview_dur = round(min(3.0, avail), 3)
+        item["preview_start"] = round(cursor, 3)
+        item["preview_dur"] = preview_dur
+        cursor += preview_dur
+        item["preview_end"] = round(cursor, 3)
+
+    print(
+        f"   [VN 2/5] 🎞️ Renderuji tichou montáž ({len(plan)} klipů z {len(clips)} dostupných, režim {effective_mode.upper()}, kategorie {selected_category.upper()})...",
+        flush=True,
+    )
     render_raw_montage(plan, montage_raw_path)
 
     # 2. Gemini Vision watches the assembled montage & writes 1:1 segmented script
+    print("   [VN 3/5] 👁️ Nahrávám tiché video na Gemini Vision, AI ho sleduje a píše komentář...", flush=True)
     _, recent_titles, _ = _extract_recent_history(history)
     vision_data, model_used = analyze_video_with_gemini(
         client=client,
@@ -1099,6 +1143,7 @@ def create_narrated_video_sequence(
 
     for idx, plan_item in enumerate(plan):
         v_seg = vision_data["segments"][idx]
+        print(f"   [VN 4/5] 🗣️ Generuji dabing pro segment {idx + 1}/{len(plan)}...", flush=True)
         raw_seg_path = os.path.join(temp_dir, f"{run_id}_seg_{idx:02d}_raw.dat")
         wav_seg_path = os.path.join(temp_dir, f"{run_id}_seg_{idx:02d}.wav")
 
@@ -1132,6 +1177,7 @@ def create_narrated_video_sequence(
     total_duration = round(concatenate_wav_segments(segment_wavs, combined_audio_path), 6)
 
     # 4. Render frame-locked silent video matching every segment duration
+    print(f"   [VN 5/5] 🔒 Skládám finální frame-locked video ({total_duration:.1f}s)...", flush=True)
     render_synced_video(segments, synced_video_path)
 
     cut_timestamps = [round(seg["end_time"], 4) for seg in segments[:-1]]

@@ -1,6 +1,9 @@
 import sys
 import os
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
 # Automatický přechod do venv, i když uživatel spustí skript přes systémový python3
 if sys.prefix == sys.base_prefix:
     for venv_path in ["/root/gta6_shorts_bot/venv/bin/python3", "/root/minecraft_stories_bot/venv/bin/python3"]:
