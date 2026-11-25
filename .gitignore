@@ -1,0 +1,25 @@
+# Secrets & API Keys
+.env
+.env.*
+!.env.example
+client_secret*.json
+token*.json
+credentials.json
+
+# Temporary & media files
+temp/
+downloads/
+output/
+music/
+history.json
+*.mp4
+*.mp3
+*.wav
+*.ass
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
