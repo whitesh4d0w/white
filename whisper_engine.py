@@ -45,7 +45,7 @@ def transcribe_and_make_subtitles(
     audio_path: str,
     ass_path: str,
     max_words_per_chunk: int = 3,
-    header_title: str = "{\\c&H0000F5FF&}🔥 GTA 6{\\c&H00FFFFFF&} • SECRET DETAILS 🔍"
+    header_title: str = "{\\c&H0000F5FF&}GTA 6{\\c&H00FFFFFF&} | SECRET DETAILS"
 ) -> float:
     """
     Transcribes audio using faster-whisper and generates TOP-TIER kinetic karaoke ASS subtitles.
@@ -155,7 +155,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         cta_end = total_duration + 0.3
         start_str = format_ass_time(cta_start)
         end_str = format_ass_time(cta_end)
-        cta_line = f"Dialogue: 1,{start_str},{end_str},CTA,,0,0,0,,{{\\fad(250,200)}}{{\\c&H000022FF&}}🔴{{\\c&H00FFFFFF&}} SUBSCRIBE FOR DAILY GTA 6 {{\\c&H0000F5FF&}}🔔{{\\c&H00FFFFFF&}}"
+        cta_line = f"Dialogue: 1,{start_str},{end_str},CTA,,0,0,0,,{{\\fad(250,200)}}{{\\c&H0000F5FF&}}LIKE & SUBSCRIBE{{\\c&H00FFFFFF&}} | DAILY GTA 6"
         dialogue_lines.append(cta_line)
 
     with open(ass_path, "w", encoding="utf-8") as f:

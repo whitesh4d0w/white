@@ -939,19 +939,7 @@ def render_breakdown_video(target_clip_name: str, audio_path: str, ass_path: str
 
 def _build_header_title(category: str) -> str:
     clean_cat = (category or "city").replace("_", " ").upper()
-    cat_emoji = {
-        "CARS": "🚗",
-        "POLICE": "🚨",
-        "CITY": "🌆",
-        "SWAMP": "🐊",
-        "WILDLIFE": "🌴",
-        "WEAPONS": "💥",
-        "HEIST": "💥",
-        "GRAPHICS": "⚡",
-        "WATER": "🌊",
-        "CHARACTERS": "👥",
-    }.get(clean_cat, "🔥")
-    return f"{{\\c&H0000F5FF&}}🔥 GTA 6{{\\c&H00FFFFFF&}} • {clean_cat} {cat_emoji}"
+    return f"{{\\c&H0000F5FF&}}GTA 6{{\\c&H00FFFFFF&}} | {clean_cat}"
 
 
 def _cleanup_temp_files(paths: list) -> None:
