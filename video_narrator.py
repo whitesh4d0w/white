@@ -547,22 +547,32 @@ CANDIDATE CLIP WINDOWS (WATCH EVERY CLIP):
 MODE: {mode.upper()} | COHESIVE THEME: {category.upper()}
 {mode_guidance}
 
+PROVEN VIRAL TITLE FORMULAS (use ONE of these patterns):
+- "GTA 6's New [Core System] Changes Everything!" (BEST performer — use for broad gameplay systems like heists, weapons, driving, AI)
+- "[Vice City / GTA 6]'s [Feature] Is Next Level!" (second-best pattern)
+- "GTA 6 [Broad Topic] [Strong Verb]" (e.g., "GTA 6 Physics Rewrite The Rules")
+
+TITLE RULES:
+- Focus on BROAD CORE GAMEPLAY PILLARS: heist mechanics, weapon systems, driving/car physics, open-world living systems, police AI overhauls, weather/ocean simulation.
+- NEVER use micro-detail topics (ankle monitors, specific NPC behavior, single lighting effects, beach density). These get 0-3 views.
+- NEVER use hyperbolic fear clickbait endings like "Breaks Every Rule!", "Pure Nightmare Fuel", "Will Terrify You!", "Will Blow Your Mind!", "Is Unhinged!". These consistently get 0 views.
+- NEVER duplicate or closely resemble any of these recent titles: [{past_str}].
+- Title must be <= 55 characters.
+
 CRITICAL DIRECTOR & SCRIPTWRITER RULES:
-1. STRICT COHESION & OUTLIER REJECTION: You MUST reject any candidate clip that does not visually belong to the EXACT SAME micro-theme/setting as your chosen story (for example, NEVER mix a random indoor gym or kitchen breakroom clip into a street, nightlife, car, or combat sequence!). Only keep clips that genuinely look like they belong in the same cohesive video.
-2. UNIFIED STORY, NOT RANDOM CAPTIONS: Find ONE compelling viral topic, hook, and continuous story arc (Hook -> Escalation -> Climax/Payoff) that connects the chosen clips. NEVER write disconnected "First we see X... Next we see Y..." descriptions. Every beat must flow naturally from the previous beat while still matching what is literally visible on screen in that clip!
+1. STRICT COHESION & OUTLIER REJECTION: You MUST reject any candidate clip that does not visually belong to the EXACT SAME micro-theme/setting as your chosen story. Only keep clips that genuinely look like they belong in the same cohesive video.
+2. UNIFIED STORY, NOT RANDOM CAPTIONS: Find ONE compelling viral topic, hook, and continuous story arc (Hook -> Escalation -> Climax/Payoff) that connects the chosen clips. NEVER write disconnected "First we see X... Next we see Y..." descriptions. Every beat must flow naturally!
 3. CLIP SELECTION & REORDERING: Pick and reorder ONLY the {min_sel}-{max_sel} tightly related clips from 0..{n_candidates - 1} in "selected_indices", dropping all unrelated outliers and putting the strongest scroll-stopping visual hook FIRST.
 4. STRICT PACING (NO CLIP LOOPING): Each segment's "narration" MUST be strictly **6-10 words max** (approx. 2.2-3.8 seconds spoken) so it fits inside a single clip without repeating or looping. Punchy, fast, high-retention phrasing only!
-4. Output "segments" with "index" 0 through len(selected_indices) - 1, matching "selected_indices" 1:1 in order:
+5. Output "segments" with "index" 0 through len(selected_indices) - 1, matching "selected_indices" 1:1 in order:
    - "visual_summary": 1 concise factual sentence describing what literally happens in that chosen clip.
    - "narration": 6-10 words max of continuous voiceover directly tied to that clip's visuals.
-     * Beat 0 MUST be an ultra-punchy 3-5 word scroll-stopping hook referencing Beat 0's visuals.
+     * Beat 0 MUST use a contrarian/FOMO or visual-directive hook (e.g., "Rockstar just killed the classic weapon wheel..." or "Watch this clip very closely because..."). These hooks outperform generic "You missed this!" hooks by 3-10x.
      * Middle beats MUST escalate the same topic using crisp transitions tied to each clip's visuals.
      * Final beat MUST deliver the payoff/climax AND end with a classic spoken Like & Subscribe CTA (e.g. "Hit like and subscribe for daily GTA 6!") within 7-10 words total.
-5. Do NOT reuse any of these recent titles: [{past_str}].
-6. "title" must be punchy and <= 55 characters.
-7. "description" must be 1-2 engaging teaser sentences + a question for comments (NO hashtags, NO repeating the script).
-8. "category" must be one of: "cars", "police", "water", "heist", "city".
-9. No stage directions, no timestamps in narration, no brackets, no markdown, no hashtags in narration.
+6. "description" must be 1-2 engaging teaser sentences + a discussion question for comments (NO hashtags, NO repeating the script). Example: "Will you be planning heavy heists with a partner when GTA 6 drops?"
+7. "category" must be one of: "cars", "police", "water", "heist", "city".
+8. No stage directions, no timestamps in narration, no brackets, no markdown, no hashtags in narration.
 
 Return ONLY valid JSON:
 {{
@@ -574,7 +584,7 @@ Return ONLY valid JSON:
     {{"index": 0, "visual_summary": "...", "narration": "..."}},
     ...
   ]
-}}"""
+}}"
 
 
 def _clean_narration_text(text: str) -> str:

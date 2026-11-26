@@ -67,7 +67,7 @@ def upload_short(video_path: str, title: str, description: str = None, privacy: 
     cat_tag_list = CATEGORY_TAGS.get(cat_key, [])
     cat_hashtag = f" #{cat_key.capitalize()}" if cat_key else ""
 
-    teaser = description or "Insane GTA 6 leaks and gameplay details you completely missed!"
+    teaser = description or "Are you ready for this massive GTA 6 gameplay overhaul? What feature are you most hyped for?"
     full_desc = (
         f"{teaser}\n\n"
         "🔔 Subscribe for daily GTA 6 leaks, secrets, and gameplay details!\n"

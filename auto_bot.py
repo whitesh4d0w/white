@@ -450,17 +450,24 @@ The video footage playing on screen will ONLY display gameplay clips of {cat.upp
 Your script MUST guide the viewer's eyes directly to what is happening on screen in this scene!
 Use phrases like: 'Watch this clip very closely...', 'Notice how...', 'Look right at the...', 'If you look at the background...'.
 
+PROVEN VIRAL TITLE FORMULAS (use ONE):
+- "GTA 6's New [Core System] Changes Everything!" (BEST performer — use for broad systems)
+- "[Vice City / GTA 6]'s [Feature] Is Next Level!" (second-best)
+- "GTA 6 [Broad Topic] [Strong Verb]"
+NEVER use hyperbolic fear endings like "Breaks Every Rule!", "Pure Nightmare Fuel", "Will Terrify You!", "Is Unhinged!". These get 0 views.
+Focus on BROAD core gameplay systems, not micro-details.
+
 STRICT RULES:
 1. Category must be: '{cat}'.
-2. Length: exactly 110-125 words.
-3. Structure: 1 viral opening hook, 3 technical/gameplay observations pointing directly to the on-screen action, and 1 closing question smoothly combined with a quick Call-To-Action (e.g. 'Drop a like, subscribe for daily GTA 6 leaks, and tell me: [question]').
+2. Length: exactly 90-115 words (approx 35-45 seconds speaking time).
+3. Structure: 1 contrarian/FOMO or visual-directive opening hook, 2-3 technical/gameplay observations pointing directly to the on-screen action, and 1 closing question smoothly combined with a quick CTA.
 4. No hashtags, no stage directions.
 
 Output ONLY valid JSON:
 {{
   "title": "{scene_item['title']}",
   "category": "{cat}",
-  "script": "The 110-125 word breakdown script...",
+  "script": "The 90-115 word breakdown script...",
   "description": "{scene_item['description']}"
 }}"""
 
@@ -532,16 +539,16 @@ def generate_100pct_unique_script(client: genai.Client) -> dict:
     category = random.choice(candidate_cats)
 
     category_prompts = {
-        "cars": "vehicle customization in auto shops, high-speed intersection drifting, cockpit gauge interactivity, or crash soft-body deformation.",
-        "police": "tactical police pursuit AI, coordinated highway PIT maneuvers, undercover cruiser evasion, or helicopter searchlights.",
-        "water": "ocean storm surge hurricanes, dynamic Everglades alligator predator AI, swamp airboat wake physics, or underwater shipwrecks.",
-        "heist": "dual-protagonist store robberies, panic button clerk reactions, Ammu-Nation modular weapon modifications, or destructible concrete cover.",
-        "city": "enterable multi-floor luxury shopping malls, ray-traced neon puddle reflections on Ocean Drive, or intelligent 24-hour NPC pedestrian routines."
+        "cars": "revolutionary new driving physics, complete vehicle customization overhauls, next-gen car handling that changes everything, or insane drift mechanics redesign.",
+        "police": "brutal new tactical police pursuit AI that changes everything, completely redesigned wanted level systems, or next-gen law enforcement coordination.",
+        "water": "next-level ocean and weather simulation, completely redesigned hurricane physics, or revolutionary Everglades wildlife AI ecosystem.",
+        "heist": "completely new dual-protagonist heist mechanics that change everything, revolutionary weapon system overhauls, or next-gen destructible cover physics.",
+        "city": "Vice City's living world at a next level, completely redesigned enterable interiors with unprecedented detail, or revolutionary 24-hour NPC simulation systems."
     }
     cat_focus = category_prompts.get(category, "cutting-edge open-world mechanics")
 
-    prompt = f"""You are an elite, viral gaming creator covering undiscovered secrets in GTA 6.
-Write an in-depth 48-55 second script (115-130 words) AND a punchy YouTube teaser description for a YouTube Short.
+    prompt = f"""You are an elite, viral gaming creator covering GTA 6 for YouTube Shorts.
+Write a 35-45 second script (90-115 words) AND a punchy YouTube teaser description.
 
 TARGET CATEGORY: "{category.upper()}"
 Topic focus: {cat_focus}
@@ -550,19 +557,28 @@ CRITICAL VISUAL SYNCHRONIZATION RULE:
 The video footage playing on screen will ONLY display gameplay clips of {category.upper()}.
 Your script MUST be 100% focused on {category}. Every detail, mechanic, and observation must directly describe this visual topic!
 
+PROVEN VIRAL TITLE FORMULAS (use ONE):
+- "GTA 6's New [Core System] Changes Everything!" (BEST performer)
+- "[Vice City / GTA 6]'s [Feature] Is Next Level!" (second-best)
+- "GTA 6 [Broad Topic] [Strong Verb]" (e.g., "GTA 6 Physics Rewrite The Rules")
+NEVER use hyperbolic fear endings like "Breaks Every Rule!", "Pure Nightmare Fuel", "Will Terrify You!", "Will Blow Your Mind!", "Is Unhinged!". These get 0 views.
+Focus on BROAD CORE GAMEPLAY PILLARS, not micro-details (ankle monitors, single lighting effects, beach NPC density).
+
+HOOK STYLE (sentence 1): Use a contrarian/FOMO hook (e.g., "Rockstar just killed the classic weapon wheel and nobody noticed...") or a visual-directive hook (e.g., "Watch this clip very closely because Rockstar just redefined..."). These outperform generic hooks by 3-10x.
+
 STRICT RULES:
 1. Do NOT cover or repeat any of these past topics: [{past_str}].
-2. Length: exactly 115-130 words (approx 50 seconds speaking time).
-3. Structure: 1 shocking viral hook, 3 fascinating gameplay/technical facts with deep detail, and 1 closing question smoothly combined with a quick Call-To-Action (e.g., 'Drop a like, subscribe for daily leaks, and tell me: [question]').
+2. Length: exactly 90-115 words (approx 35-45 seconds speaking time).
+3. Structure: 1 contrarian/FOMO or visual-directive hook, 2-3 fascinating gameplay/technical facts with deep detail, and 1 closing question smoothly combined with a quick CTA (e.g., 'Drop a like, subscribe for daily leaks, and tell me: [question]').
 4. Category key in JSON must be '{category}'.
 5. No hashtags, no stage directions.
 
 Output ONLY valid JSON with keys:
 {{
-  "title": "Ultra-catchy unique title under 55 chars",
+  "title": "Viral title under 55 chars (use proven formula above!)",
   "category": "{category}",
-  "script": "A 115-130 word engaging script...",
-  "description": "Short, punchy 1-2 sentence YouTube teaser with an engaging question for the audience. DO NOT repeat the voiceover script!"
+  "script": "A 90-115 word engaging script...",
+  "description": "1-2 sentence teaser with a discussion question. Example: 'Will you be planning heavy heists with a partner when GTA 6 drops?'. DO NOT repeat the script!"
 }}"""
 
     models = get_available_text_models(client)
@@ -1147,8 +1163,8 @@ def _run_cycle_locked(
 
     success = False
     out_path = ""
-    title = "Insane GTA 6 Secret You Missed"
-    description = "Insane GTA 6 details and leaks you missed! What do you think? 👇"
+    title = "GTA 6's New System Changes Everything"
+    description = "Are you ready for this massive gameplay overhaul? What feature are you most hyped for? 👇"
     script = ""
     category = "city"
     chosen_mode = mode
